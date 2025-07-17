@@ -1,0 +1,29 @@
+[build]
+target = "test"
+compiler = "gfortran"
+
+flags = [
+  "-cpp", "-fno-align-commons", "-O3",
+  "-ffpe-trap=zero,invalid,underflow,overflow",
+  "-std=legacy", "-ffixed-line-length-none", "-fall-intrinsics",
+  "-Wno-unused-variable", "-Wno-unused-function",
+  "-Wno-conversion", "-fopenmp", "-Imod"
+]
+
+obj_dir = "obj"
+mod_dir = "mod"
+
+[search]
+deep = ["src"]
+#shallow = ["lib", "include"]
+
+[library]
+#source-libs = ["lib/test.lib"]
+
+[exclude]
+#Requires the relative path from the Fortuna.toml file.
+#files = ["src/some_file.f90"] 
+
+[lib]
+#Placed in the lib folder and only supports static linking with ar
+#target = "test.lib"
