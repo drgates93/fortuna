@@ -124,51 +124,52 @@ const char *fortuna_toml_get_string(fortuna_toml_t *cfg, const char *key_path) {
     return NULL;
 }
 
-char ***extract_string_matrix(toml_table_t* cfg, const char* key, int* rows, int* cols) {
-    if (!cfg || !key || !rows || !cols) return NULL;
+// Returns list of keys under table_path (e.g. keys under "bin")
+char **fortuna_toml_get_table_keys_list(fortuna_toml_t *cfg, const char *table_path) {
+    toml_table_t *tab = toml_table_in(cfg->table, table_path);
+    if (!tab) return NULL;
 
-    toml_array_t* matrix = toml_array_in(cfg, key);
-    if (!matrix) {
-        fprintf(stderr, "Key '%s' not found or not an array.\n", key);
-        return NULL;
+    int n = toml_table_nkval(tab);
+    if (n == 0) return NULL;
+
+    char **keys = calloc(n + 1, sizeof(char *));
+    if (!keys) return NULL;
+
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        const char *key = toml_key_in(tab, i);
+        if (!key) continue;
+        keys[count++] = strdup(key);
+    }
+    keys[count] = NULL;
+
+    //Shrink to fit.
+    if (count < n) {
+        char **tmp = realloc(keys, (count + 1) * sizeof(char *));
+        if (tmp) keys = tmp;
     }
 
-    int outer_len = toml_array_nelem(matrix);
-    if (outer_len == 0) return NULL;
+    return keys;
+}
 
-    // Assume all inner arrays have the same number of elements
-    toml_array_t* first_row = toml_array_at(matrix, 0);
-    if (!first_row) return NULL;
+// Given a key under table_path, resolve the "target name":
+char *fortuna_toml_resolve_target_name(fortuna_toml_t *cfg, const char *table_path, const char *key) {
+    toml_table_t *tab = toml_table_in(cfg->table, table_path);
+    if (!tab) return NULL;
 
-    int inner_len = toml_array_nelem(first_row);
-    if (inner_len == 0) return NULL;
-
-    char*** result = malloc(outer_len * sizeof(char**));
-    if (!result) return NULL;
-
-    for (int i = 0; i < outer_len; i++) {
-        toml_array_t* inner = toml_array_at(matrix, i);
-        if (!inner) {
-            fprintf(stderr, "matrix[%d] is not an array.\n", i);
-            result[i] = NULL;
-            continue;
-        }
-
-        const char* value = NULL;
-        result[i] = malloc(inner_len * sizeof(char*));
-        for (int j = 0; j < inner_len; j++) {
-            value = NULL;
-            toml_datum_t val = toml_string_at(inner, j);
-            if (val.ok) value = val.u.s;
-            if (value) {
-                result[i][j] = strdup(value); // copy to avoid ownership issues
-            } else {
-                result[i][j] = NULL;
-            }
-        }
+    // Try string first
+    toml_datum_t str_val = toml_string_in(tab, key);
+    if (str_val.ok) {
+        char *name = strdup(str_val.u.s);
+        return name;
     }
 
-    *rows = outer_len;
-    *cols = inner_len;
-    return result;
+    // Then try table
+    toml_table_t *subtab = toml_table_in(tab, key);
+    if (subtab) {
+        return strdup(key);
+    }
+
+    // Neither string nor table
+    return NULL;
 }

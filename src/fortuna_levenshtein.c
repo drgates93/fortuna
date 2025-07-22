@@ -40,7 +40,10 @@ static inline int char_index(char c) {
 
 //Allocated a new Trie node in the arena. No real allocation, but sets the memory up.
 TrieNode* alloc_node(void) {
-    if (arena_idx >= MAX_NODES) return NULL;
+    if (arena_idx >= MAX_NODES) {
+        print_error("Arena Allocated Trie is too large. Must be less than 256 words");
+        exit(1);
+    }
     TrieNode* node = &arena[arena_idx++];
     node->mask = 0;
     node->is_word = 0;
@@ -103,7 +106,13 @@ void search_recursive(TrieNode* node,
     //Get the mask for what nodes are not-empty. 
     uint32_t mask = node->mask;
     while (mask) {
+
+        //Count the trailing 0's (i.e., we can skip up to i)
         i = __builtin_ctz(mask);
+
+        //Turn off that bit for the next loop where we skip some number of 0's etc. 
+        //until the mask is 0 at which point we checked every set bit, skipping the 
+        //blocks of 0 bits between set bits for our sparse dictionary. 
         mask &= mask - 1;
 
         ch = (i == 26) ? '-' : ('a' + i);
@@ -154,9 +163,10 @@ static const char* dictionary[MAX_WORDS] = {"new",
                                             "--lib",
                                             "--bin",
                                             "--rebuild",
+                                            "clean",
                                             "-r",
                                             "-j"};
-static const int dictSize = 8;
+static const int dictSize = 9;
 
 void loadDictionary(TrieNode *root) {
     for(int i = 0; i < dictSize; i++) {
@@ -207,10 +217,13 @@ int suggest_closest_word_fuzzy(TrieNode *root, const char *input) {
     search_recursive(root, input, len, max_distance, dp, prefix, 
                      best_match, 0, &best_score);
 
-    //Perfect match so nothing to suggest.
-    if(best_score == 0) return 0;
-
-    printf("%s %s %d\n",input,best_match,best_score);
+    
+    //Possible we have a perfect match, but a wrong character afterwards
+    //We matched the substring, but it's not a perfect match. 
+    //Only return early here for an exactly perfect match.
+    if(best_score == 0 && strcmp(best_match,input) == 0){
+        return 0;
+    }
 
     //Print the suggestion if less than 3 away
     if(best_score <= 3){
@@ -283,68 +296,4 @@ int suggest_closest_word_fuzzy_linear(const char *input) {
         print_error(msg);
     }
     return -1;
-}
-
-
-void random_edit(const char* src, char* out, int max_len) {
-    int len = strlen(src);
-    len = len > max_len - 1 ? max_len - 1 : len;
-    strcpy(out, src);
-
-    int edit_type = rand() % 3;
-    int pos = rand() % (len ? len : 1);
-    char new_ch = "abcdefghijklmnopqrstuvwxyz-"[rand() % 27];
-
-    switch (edit_type) {
-        case 0: // substitution
-            out[pos] = new_ch;
-            break;
-        case 1: // deletion
-            if (len > 1) memmove(&out[pos], &out[pos + 1], len - pos);
-            break;
-        case 2: // insertion
-            if (len < max_len - 2) {
-                memmove(&out[pos + 1], &out[pos], len - pos + 1);
-                out[pos] = new_ch;
-            }
-            break;
-    }
-}
-
-// Time utility
-static inline uint64_t now_ns() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
-}
-
-void levenshtein_timing(int trials) {
-    char query[MAX_WORD_LEN + 1];
-    uint64_t total_linear = 0, total_trie = 0;
-
-    // Build trie
-    TrieNode* root = alloc_node();
-    loadDictionary(root);
-
-    for (int t = 0; t < trials; t++) {
-        const char* base = dictionary[rand() % dictSize];
-        random_edit(base, query, MAX_WORD_LEN);
-
-        uint64_t t0 = now_ns();
-        suggest_closest_word_fuzzy_linear(query);
-        uint64_t t1 = now_ns();
-        total_linear += (t1 - t0);
-
-        uint64_t t2 = now_ns();
-        suggest_closest_word_fuzzy(root,query);
-        uint64_t t3 = now_ns();
-        total_trie += (t3 - t2);
-    }
-
-    char msg[256];
-    snprintf(msg,sizeof(msg),"Linear search total: %llu ns, avg: %.2f ns",total_linear, total_linear / (double)trials);
-    print_test(msg);
-
-    snprintf(msg,sizeof(msg),"Trie search   total: %llu ns, avg: %.2f ns",total_trie, total_trie / (double)trials);
-    print_test(msg);
 }

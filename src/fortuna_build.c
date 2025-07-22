@@ -139,13 +139,6 @@ int strcmp_case_insensitive(const char *ext, const char *target) {
     return (*ext == '\0' && *target == '\0') ? 0 : 1;
 }
 
-// Free a list of strings
-static void free_string_list(char **list, int count) {
-    if (!list) return;
-    for (int i = 0; i < count; i++) free(list[i]);
-    free(list);
-}
-
 //Truncate the string at the file extension for fortran and C
 int truncate_file_name_at_file_extension(const char* rel_file_path){
     char *ext = strrchr(rel_file_path, '.');
@@ -162,6 +155,31 @@ int truncate_file_name_at_file_extension(const char* rel_file_path){
         *ext = '\0';
     }
     return 0;
+}
+
+char *join_flags_array(char **flags_array) {
+    if (!flags_array) return NULL;
+
+    size_t total_len = 0;
+    int count = 0;
+
+    for (int i = 0; flags_array[i]; i++) {
+        total_len += strlen(flags_array[i]) + 1; // +1 for space or null terminator
+        count++;
+    }
+
+    if (count == 0) return NULL;
+
+    char *joined = malloc(total_len);
+    if (!joined) return NULL;
+
+    joined[0] = '\0';
+    for (int i = 0; i < count; i++) {
+        strcat(joined, flags_array[i]);
+        if (i < count - 1) strcat(joined, " ");
+    }
+
+    return joined;
 }
 
 
@@ -193,136 +211,25 @@ int build_library(char** sources, int src_count, const char* obj_dir, const char
     return 0;
 }
 
-int fortuna_build_project_incremental(const int parallel_build, const int incremental_build_override, 
-                                     const int lib_only, const int run_flag) {
 
-    //Check if we can do an incremental build.
-    int incremental_build = file_exists(hash_cache_file);
+int build_target_incremental_core(fortuna_toml_t *cfg,
+                                   char *maketop_cmd,
+                                   const char *compiler,
+                                   const char *flags_str,
+                                   const char *obj_dir,
+                                   const char *mod_dir,
+                                   const char *target_name,
+                                   char **exclude_files,
+                                   const int parallel_build,
+                                   const int incremental_build,
+                                   const int lib_only,
+                                   const int run_flag,
+                                   const int is_c) {
 
-    //If we allow the override, then we want to rebuild all, so incremental build is disabled.
-    if(incremental_build_override == 0) incremental_build = 0;
 
-    //Load the toml file.
-    const char* toml_path = "Fortuna.toml";
-    fortuna_toml_t cfg = {0};
-    if (fortuna_toml_load(toml_path, &cfg) != 0) {
-        print_error("Failed to load Fortuna.toml.");
-        return -1;
-    }
+    //Set the return code
+    int return_code = 0;
 
-    const char *target = fortuna_toml_get_string(&cfg, "build.target");
-    if (!target) {
-        print_error("Missing 'build.target' in config.");
-        fortuna_toml_free(&cfg);
-        return -1;
-    }
-
-    char *compiler = (char *)fortuna_toml_get_string(&cfg, "build.compiler");
-    if (!compiler) {
-        print_error("Invalid compiler selected");
-        return -1;
-    }
-
-    char **flags_array = fortuna_toml_get_array(&cfg, "build.flags");
-    if (!flags_array) {
-        print_error("Missing or empty 'build.flags' in config.");
-        fortuna_toml_free(&cfg);
-        return -1;
-    }
-
-    // Combine unique flags once into a single string
-    char **unique_flags = NULL;
-    int unique_count = 0;
-
-    for (int i = 0; flags_array[i]; i++) {
-        if (add_unique_flag(&unique_flags, &unique_count, flags_array[i]) != 0) {
-            print_error("Memory error adding flags to list");
-            goto cleanup_arrays;
-        }
-    }
-
-    // Build single string of all flags (space separated)
-    size_t flags_len = 0;
-    for (int i = 0; i < unique_count; i++) {
-        flags_len += strlen(unique_flags[i]) + 1; // +1 for space or null terminator
-    }
-
-    char *flags_str = malloc(flags_len + 1);
-    if (!flags_str) {
-        print_error("Memory allocation error for flags string.");
-        goto cleanup_arrays;
-    }
-    flags_str[0] = '\0';
-
-    for (int i = 0; i < unique_count; i++) {
-        strcat(flags_str, unique_flags[i]);
-        if (i < unique_count - 1) strcat(flags_str, " ");
-    }
-
-    //Load the location to place the obj and mod files. 
-    const char *obj_dir = fortuna_toml_get_string(&cfg, "build.obj_dir");
-    const char *mod_dir = fortuna_toml_get_string(&cfg, "build.mod_dir");
-
-    int is_c = 0;
-    if(strcasecmp(compiler,"clang") == 0 || 
-       strcasecmp(compiler,"gcc")   == 0){
-        is_c = 1;
-    }
-
-    //Check if the dirs exist if requested.
-    if (obj_dir && !dir_exists(obj_dir)) {
-        print_error("Object directory does not exist.");
-        goto cleanup_arrays;
-    }
-    if (mod_dir && !dir_exists(mod_dir)) {
-        print_error("Module directory does not exist.");
-        goto cleanup_arrays;
-    }
-
-    if(!obj_dir) {
-        obj_dir = "obj";
-        if(make_dir("obj") == -1){
-            print_error("Unable to make obj directory. Check folder permissions.");
-            return -1;
-        }
-    }
-        
-    if(!mod_dir && !is_c) {
-        mod_dir = "mod";
-        if(make_dir("mod") == -1){
-            print_error("Unable to make mod directory. Check folder permissions.");
-            return -1;
-        }
-    }else if(mod_dir && is_c){
-        mod_dir = "";
-    }
-
-    //Check the directories.
-    char **deep_dirs    = fortuna_toml_get_array(&cfg, "search.deep");
-    char **shallow_dirs = fortuna_toml_get_array(&cfg, "search.shallow");
-
-    //Build the command for the maketopologicf90 call. 
-    //This will be a loop when we support multiple binaries. 
-    char maketop_cmd[1024] = {0};
-#ifdef _WIN32
-    strcat(maketop_cmd, "bin\\maketopologicf90.exe");
-#else
-    strcat(maketop_cmd, "./bin/maketopologicf90.exe");
-#endif
-    if (deep_dirs) {
-        strcat(maketop_cmd, " -D ");
-        for (int i = 0; deep_dirs[i]; i++) {
-            strcat(maketop_cmd, deep_dirs[i]);
-            if (deep_dirs[i + 1]) strcat(maketop_cmd, ",");
-        }
-    }
-    if (shallow_dirs) {
-        strcat(maketop_cmd, " -d ");
-        for (int i = 0; shallow_dirs[i]; i++) {
-            strcat(maketop_cmd, shallow_dirs[i]);
-            if (shallow_dirs[i + 1]) strcat(maketop_cmd, ",");
-        }
-    }
     //Still need the list of source files to link against.
     char *topo_src= run_command_capture(maketop_cmd);
 
@@ -330,22 +237,13 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     FileNode*  cur_map[HASH_TABLE_SIZE]  = {NULL};
     HashEntry* prev_map[HASH_TABLE_SIZE] = {NULL};
     
-    //Need the list of everything for linking. 
-    if (!topo_src) {
-        print_error("Failed to get topologically sorted sources.");
-        goto cleanup_search_arrays;
-    }
-
-    
     //Now we get the exclusion list (if it exists)
     FileNode*  exclusion_map[HASH_TABLE_SIZE]  = {NULL};
-    char **exclude_files = fortuna_toml_get_array(&cfg, "exclude.files");
     if(exclude_files){
         for(int i = 0; exclude_files[i]; i++){
             insert_node(exclude_files[i],exclusion_map);
         }
     }
-
 
     //From the list of topologically sorted files, we need to parse them
     //properly as they are a single string. 
@@ -356,9 +254,10 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     while (line) {
         tmp = realloc(sources, sizeof(char *)*(src_count + 1));
         if (!tmp) {
-            print_error("Memory allocation error.");
+            print_error("Memory allocation error in parsing sources");
             free(topo_src);
-            goto cleanup_sources;
+            return_code = -1;
+            goto defer_hashmaps;
         }
                 
         //Skip if this file is in the exclusion list
@@ -373,7 +272,6 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         src_count++;
         line = strtok(NULL, "\n");
     }
-
 
     //Define the rebuild count
     int rebuild_cnt = 0;
@@ -402,7 +300,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         int res = parse_dependency_file(deps_file,cur_map);
         if(!res){
             print_error("Failed to make hash table of dependency graph\n");
-            return -1;
+            return_code = -1;
+            goto defer_core;
         }
             
         //If hash file exists, load it and compare
@@ -413,7 +312,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         }else{
             print_error("Cannot do an incremental build with no history!");
             print_error("Check that the .cache/hash.dep file exists.\n");
-            return -1;
+            return_code = -1;
+            goto defer_core;
         }
 
 
@@ -435,7 +335,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         //Otherwise, we jump to our memory cleanup.
         if(rebuild_list == NULL && lib_only == 0) {
             if(!run_flag) print_info("Nothing to build");
-            goto cleanup_sources;
+            return_code = 0;
+            goto defer_core;
         }
 
         //Compile each source only if it changed and needs to be rebuilt. 
@@ -476,7 +377,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
                     print_error("Compilation failed.");
                     free(topo_make);
                     free(rebuild_list); 
-                    goto cleanup_sources;
+                    return_code = -1;
+                    goto defer_core;
                 }
             }else{
                 //Copy the command to a per thread buffer to avoid conflicts. 
@@ -485,7 +387,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
                     print_error("Failed to create thread");
                     free(topo_make);
                     free(rebuild_list); 
-                    goto cleanup_sources;
+                    return_code = -1;
+                    goto defer_core;
                 }
             }
 
@@ -498,9 +401,16 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         free(rebuild_list);
     }else{
         for (int i = 0; i < src_count; i++) {
+
             const char *src      = sources[i];
             const char *rel_path = get_last_path_segment(src);
             if(truncate_file_name_at_file_extension(rel_path)) continue;
+
+            //Skip files if requested. 
+            if(node_is_in_the_hashmap(src,exclusion_map)) {
+                continue;
+            }
+
             snprintf(obj_file, sizeof(obj_file), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
 
             if(!is_c){
@@ -519,14 +429,16 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
                 int ret = system(compile_cmd);
                 if (ret != 0) {
                     print_error("Compilation failed.");
-                    goto cleanup_sources;
+                    return_code = -1;
+                    goto defer_core;
                 }
             }else{
                 //Copy the command to a per thread buffer to avoid conflicts. 
                 char *compile_cmd_ts = strdup(compile_cmd);
                 if (thread_create(&threads[i], compile_system_worker, compile_cmd_ts) != 0) {
                     print_error("Failed to create thread");
-                    goto cleanup_sources;
+                    return_code = -1;
+                    goto defer_core;
                 }
             }
         }
@@ -542,11 +454,12 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     }
 
     //Check if we are building a library or not.
-    const char* lib = fortuna_toml_get_string(&cfg, "lib.target");
+    const char* lib = fortuna_toml_get_string(cfg, "lib.target");
     if(lib != NULL && lib_only == 0) {
         if(build_library(sources,src_count,obj_dir,lib) == -1){
             print_error("Failed to link library. Check if ar is installed and if the paths are correct.");
-            return -1;
+            return_code = -1;
+            goto defer_core;
         }
     }else if(lib != NULL && lib_only == 1){
         //If lib only, we skip linking the executable.
@@ -554,9 +467,9 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     }else if(lib == NULL && lib_only == 1){
         //If lib == NULL but we requested a lib only run, error out. 
         print_error("No target lib found in Fortuna.toml");
-        return -1;
+        return_code = -1;
+        goto defer_core;
     }
-
 
     // Link
     char link_cmd[4096] = {0};
@@ -580,7 +493,8 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
             char msg[256];
             snprintf(msg, sizeof(msg), "Object file %s does not exist.", obj_path);
             print_error(msg);
-            return -1;
+            return_code = -1;
+            goto defer_core;
         }
 
         //Add to the command string.
@@ -588,7 +502,7 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     }
 
     //Link with the libraries (if they exist).
-    char **source_libs = fortuna_toml_get_array(&cfg, "library.source-libs");
+    char **source_libs = fortuna_toml_get_array(cfg, "library.source-libs");
     if (!source_libs) source_libs = NULL;
     if (source_libs ) {
         for (int i = 0; source_libs[i]; i++) {
@@ -597,14 +511,15 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
     }
 
     //Build the final link command
-    link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " -o %s", target);
+    link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " -o %s", target_name);
 
     //Execute the link command
     print_info(link_cmd);
     int ret = system(link_cmd);
     if (ret != 0) {
         print_error("Linking failed.");
-        goto cleanup_sources;
+        return_code = -1;
+        goto defer_core;
     }
 
 
@@ -632,16 +547,228 @@ int fortuna_build_project_incremental(const int parallel_build, const int increm
         save_hashes(hash_cache_file,cur_map);
     }
 
+defer_core:
+    if(parallel_build) free(threads);
 
-    //GOTO's for freeing the memory. Basically defer, but obviously C doesn't have a real defer. 
-cleanup_sources:
-    if (sources) {
-        for (int i = 0; i < src_count; i++) free(sources[i]);
-        free(sources);
+defer_hashmaps:
+    free_prev_hash_table(prev_map);
+    free_all(cur_map);
+    free_all(exclusion_map);
+
+    return return_code;
+}
+
+
+
+int fortuna_build_project_incremental(const int parallel_build, 
+                                      const int incremental_build_override, 
+                                      const int lib_only, 
+                                      const int run_flag) {
+
+
+    //Set the return code
+    int ret_code = 0;
+
+    //Check if we can do an incremental build.
+    int incremental_build = file_exists(hash_cache_file);
+
+    //If we allow the override, then we want to rebuild all, so incremental build is disabled.
+    if(incremental_build_override == 0) incremental_build = 0;
+
+    //Load the toml file.
+    const char* toml_path = "Fortuna.toml";
+    fortuna_toml_t cfg = {0};
+    if (fortuna_toml_load(toml_path, &cfg) != 0) {
+        print_error("Failed to load Fortuna.toml.");
+        return -1;
     }
-    free(topo_src);
 
-cleanup_search_arrays:
+    const char *target = fortuna_toml_get_string(&cfg, "build.target");
+    if (!target) {
+        print_error("Missing 'build.target' in config.");
+        fortuna_toml_free(&cfg);
+        return -1;
+    }
+
+    char *compiler = (char *)fortuna_toml_get_string(&cfg, "build.compiler");
+    if (!compiler) {
+        print_error("Invalid compiler selected");
+        return -1;
+    }
+
+    char **flags_array = fortuna_toml_get_array(&cfg, "build.flags");
+    if (!flags_array) {
+        print_error("Missing or empty 'build.flags' in config.");
+        fortuna_toml_free(&cfg);
+        return -1;
+    }
+
+    //Join the flags into a single string.
+    char *flags_str = join_flags_array(flags_array);
+
+    //Load the location to place the obj and mod files. 
+    const char *obj_dir = fortuna_toml_get_string(&cfg, "build.obj_dir");
+    const char *mod_dir = fortuna_toml_get_string(&cfg, "build.mod_dir");
+
+    int is_c = 0;
+    if(strcasecmp(compiler,"clang") == 0 || 
+       strcasecmp(compiler,"gcc")   == 0){
+        is_c = 1;
+    }
+
+    //Check if the dirs exist if requested.
+    if (obj_dir && !dir_exists(obj_dir)) {
+        print_error("Object directory does not exist.");
+        goto defer_build;
+    }
+    if (mod_dir && !dir_exists(mod_dir)) {
+        print_error("Module directory does not exist.");
+        goto defer_build;
+    }
+
+    if(!obj_dir) {
+        obj_dir = "obj";
+        if(make_dir("obj") == -1){
+            print_error("Unable to make obj directory. Check folder permissions.");
+            return -1;
+        }
+    }
+        
+    if(!mod_dir && !is_c) {
+        mod_dir = "mod";
+        if(make_dir("mod") == -1){
+            print_error("Unable to make mod directory. Check folder permissions.");
+            return -1;
+        }
+    }else if(mod_dir && is_c){
+        mod_dir = "";
+    }
+
+    //Check the directories.
+    char **deep_dirs    = fortuna_toml_get_array(&cfg, "search.deep");
+    char **shallow_dirs = fortuna_toml_get_array(&cfg, "search.shallow");
+
+    // Check for multiple targets
+    char **keys = fortuna_toml_get_table_keys_list(&cfg, "bin");
+    if (keys) {
+        for (int i = 0; keys[i]; i++) {
+            char *sub_target_name  = fortuna_toml_resolve_target_name(&cfg, "bin", keys[i]);
+            if (!sub_target_name ) continue;
+            char key_buf[256];
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.flags", sub_target_name);
+            char **sub_flags_array = fortuna_toml_get_array(&cfg, key_buf);
+            char *sub_flags_str = join_flags_array(sub_flags_array);
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.obj_dir", sub_target_name);
+            const char *sub_obj_dir = fortuna_toml_get_string(&cfg, key_buf);
+            if (!sub_obj_dir) sub_obj_dir = obj_dir;
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.mod_dir", sub_target_name);
+            const char *sub_mod_dir = fortuna_toml_get_string(&cfg, key_buf);
+            if (!sub_mod_dir) sub_mod_dir = mod_dir;
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.search.deep", sub_target_name);
+            char **sub_deep_dirs = fortuna_toml_get_array(&cfg, key_buf);
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.search.shallow", sub_target_name);
+            char **sub_shallow_dirs = fortuna_toml_get_array(&cfg, key_buf);
+
+            snprintf(key_buf, sizeof(key_buf), "bin.%s.exclude", sub_target_name);
+            char **sub_exclude_files = fortuna_toml_get_array(&cfg, key_buf);
+
+                // Build maketopologicf90 command
+                char maketop_cmd[1024] = {0};
+            #ifdef _WIN32
+                strcat(maketop_cmd, "bin\\maketopologicf90.exe");
+            #else
+                strcat(maketop_cmd, "./bin/maketopologicf90.exe");
+            #endif
+            if (sub_deep_dirs) {
+                strcat(maketop_cmd, " -D ");
+                for (int j = 0; sub_deep_dirs[j]; j++) {
+                    strcat(maketop_cmd, sub_deep_dirs[j]);
+                    if (sub_deep_dirs[j + 1]) strcat(maketop_cmd, ",");
+                }
+            }
+            if (sub_shallow_dirs) {
+                strcat(maketop_cmd, " -d ");
+                for (int j = 0; sub_shallow_dirs[j]; j++) {
+                    strcat(maketop_cmd, sub_shallow_dirs[j]);
+                    if (sub_shallow_dirs[j + 1]) strcat(maketop_cmd, ",");
+                }
+            }
+
+            ret_code = build_target_incremental_core(&cfg,
+                                                     maketop_cmd,
+                                                     compiler,
+                                                     sub_flags_str,
+                                                     sub_obj_dir,
+                                                     sub_mod_dir,
+                                                     sub_target_name,
+                                                     sub_exclude_files,
+                                                     parallel_build,
+                                                     incremental_build,
+                                                     lib_only,
+                                                     run_flag,
+                                                     is_c);
+
+            //Free the allocations for the arrays
+            if (sub_deep_dirs) {
+                for (int k = 0; sub_deep_dirs[k]; k++) free(sub_deep_dirs[k]);
+                free(sub_deep_dirs);
+            }
+            if (sub_shallow_dirs) {
+                for (int k = 0; sub_shallow_dirs[k]; k++) free(sub_shallow_dirs[k]);
+                free(sub_shallow_dirs);
+            }
+            if(sub_exclude_files){
+                for (int k = 0; sub_exclude_files[k]; k++) free(sub_exclude_files[k]);
+                free(sub_exclude_files);
+            }
+
+            if(ret_code < 0) return -1;
+        }
+    }
+
+    // Now build the top-level main target using the same logic:
+    char maketop_cmd[1024] = {0};
+    #ifdef _WIN32
+        strcat(maketop_cmd, "bin\\maketopologicf90.exe");
+    #else
+        strcat(maketop_cmd, "./bin/maketopologicf90.exe");
+    #endif
+    if (deep_dirs) {
+        strcat(maketop_cmd, " -D ");
+        for (int i = 0; deep_dirs[i]; i++) {
+            strcat(maketop_cmd, deep_dirs[i]);
+            if (deep_dirs[i + 1]) strcat(maketop_cmd, ",");
+        }
+    }
+    if (shallow_dirs) {
+        strcat(maketop_cmd, " -d ");
+        for (int i = 0; shallow_dirs[i]; i++) {
+            strcat(maketop_cmd, shallow_dirs[i]);
+            if (shallow_dirs[i + 1]) strcat(maketop_cmd, ",");
+        }
+    }
+
+    char **exclude_files = fortuna_toml_get_array(&cfg, "exclude.files");
+    ret_code = build_target_incremental_core(&cfg,
+                                             maketop_cmd,
+                                             compiler,
+                                             flags_str,
+                                             obj_dir,
+                                             mod_dir,
+                                             target,
+                                             exclude_files,
+                                             parallel_build,
+                                             incremental_build,
+                                             lib_only,
+                                             run_flag,
+                                             is_c);
+
+
     if (deep_dirs) {
         for (int i = 0; deep_dirs[i]; i++) free(deep_dirs[i]);
         free(deep_dirs);
@@ -650,300 +777,20 @@ cleanup_search_arrays:
         for (int i = 0; shallow_dirs[i]; i++) free(shallow_dirs[i]);
         free(shallow_dirs);
     }
+    if (exclude_files) {
+        for (int i = 0; exclude_files[i]; i++) free(exclude_files[i]);
+        free(exclude_files);
+    }
 
-cleanup_arrays:
-    for (int i = 0; flags_array[i]; i++) free(flags_array[i]);
-    free(flags_array);
-
-    free_string_list(unique_flags, unique_count);
+defer_build:
+    if (flags_array) {
+        for (int i = 0; flags_array[i]; i++) free(flags_array[i]);
+        free(flags_array);
+    }
+    if (flags_str) free(flags_str);
     fortuna_toml_free(&cfg);
 
-    //Free the hashmaps.
-    free_all(cur_map);
-    free_prev_hash_table(prev_map);
-    free_all(exclusion_map);
-
-    return 0;
+    //Check if we passed or failed the build
+    return (ret_code < 0) ? -1 : 0;
 }
-
-
-
-
-
-// Deprecated Code for single increment every time. Saved here because it's useful for debugging. 
-// int fortuna_build_project(const char *project_dir) {
-//     if (!project_dir) {
-//         print_error("Project directory is NULL.");
-//         return -1;
-//     }
-
-//     char build_dir[512];
-//     snprintf(build_dir, sizeof(build_dir), "%s/build", project_dir);
-
-//     if (!dir_exists(build_dir)) {
-//         snprintf(build_dir, sizeof(build_dir), "build");
-//         if (!dir_exists(build_dir)) {
-//             print_error("Build directory does not exist.");
-//             return -1;
-//         }
-//     }
-
-    
-//     char cache_path[512];
-//     snprintf(cache_path, sizeof(cache_path), "%s/incremental_cache.txt",build_dir);
-//     if(file_exists(cache_path)){
-//         int res = fortuna_build_project_incremental(project_dir);
-//         return res;
-//     }
-
-//     char toml_path[512];
-//     snprintf(toml_path, sizeof(toml_path), "%s/project.toml", build_dir);
-
-//     fortuna_toml_t cfg = {0};
-//     if (fortuna_toml_load(toml_path, &cfg) != 0) {
-//         print_error("Failed to load project.toml.");
-//         return -1;
-//     }
-
-//     const char *target = fortuna_toml_get_string(&cfg, "build.target");
-//     if (!target) {
-//         print_error("Missing 'build.target' in config.");
-//         fortuna_toml_free(&cfg);
-//         return -1;
-//     }
-
-//     char *compiler = (char *)fortuna_toml_get_string(&cfg, "build.compiler");
-//     if (!compiler) compiler = "gfortran";
-
-//     char **flags_array = fortuna_toml_get_array(&cfg, "build.flags");
-//     if (!flags_array) {
-//         print_error("Missing or empty 'build.flags' in config.");
-//         fortuna_toml_free(&cfg);
-//         return -1;
-//     }
-
-//     // Combine unique flags once into a single string
-//     char **unique_flags = NULL;
-//     int unique_count = 0;
-
-//     for (int i = 0; flags_array[i]; i++) {
-//         if (add_unique_flag(&unique_flags, &unique_count, flags_array[i]) != 0) {
-//             print_error("Memory error adding flag.");
-//             goto cleanup_arrays;
-//         }
-//     }
-
-//     // Build single string of all flags (space separated)
-//     size_t flags_len = 0;
-//     for (int i = 0; i < unique_count; i++) {
-//         flags_len += strlen(unique_flags[i]) + 1; // +1 for space or null terminator
-//     }
-
-//     char *flags_str = malloc(flags_len + 1);
-//     if (!flags_str) {
-//         print_error("Memory allocation error for flags string.");
-//         goto cleanup_arrays;
-//     }
-//     flags_str[0] = '\0';
-
-//     for (int i = 0; i < unique_count; i++) {
-//         strcat(flags_str, unique_flags[i]);
-//         if (i < unique_count - 1) strcat(flags_str, " ");
-//     }
-
-//     char old_dir[PATH_MAX];
-//     getcwd(old_dir, sizeof(old_dir));
-//     chdir(project_dir);
-
-//     const char *obj_dir = fortuna_toml_get_string(&cfg, "build.obj_dir");
-//     const char *mod_dir = fortuna_toml_get_string(&cfg, "build.mod_dir");
-
-//     if (!obj_dir || !mod_dir) {
-//         print_error("Missing directory settings in config.");
-//         goto cleanup_flags_str;
-//     }
-
-//     if (!dir_exists(obj_dir)) {
-//         print_error("Object directory does not exist.");
-//         goto cleanup_flags_str;
-//     }
-//     if (!dir_exists(mod_dir)) {
-//         print_error("Module directory does not exist.");
-//         goto cleanup_flags_str;
-//     }
-
-//     char **deep_dirs = fortuna_toml_get_array(&cfg, "search.deep");
-//     char **shallow_dirs = fortuna_toml_get_array(&cfg, "search.shallow");
-
-//     if (!deep_dirs) deep_dirs = NULL;
-//     if (!shallow_dirs) shallow_dirs = NULL;
-
-//     char maketop_cmd[1024] = {0};
-
-// #ifdef _WIN32
-//     strcat(maketop_cmd, "build\\maketopologicf90.exe");
-// #else
-//     strcat(maketop_cmd, "./build/maketopologicf90.exe");
-// #endif
-//     if (deep_dirs) {
-//         strcat(maketop_cmd, " -D ");
-//         for (int i = 0; deep_dirs[i]; i++) {
-//             strcat(maketop_cmd, deep_dirs[i]);
-//             if (deep_dirs[i + 1]) strcat(maketop_cmd, ",");
-//         }
-//     }
-//     if (shallow_dirs) {
-//         strcat(maketop_cmd, " -d ");
-//         for (int i = 0; shallow_dirs[i]; i++) {
-//             strcat(maketop_cmd, shallow_dirs[i]);
-//             if (shallow_dirs[i + 1]) strcat(maketop_cmd, ",");
-//         }
-//     }
-
-//     //Get the file list. 
-//     char *topo_src= run_command_capture(maketop_cmd);
-//     if (!topo_src) {
-//         print_error("Failed to get topologically sorted sources.");
-//         goto cleanup_search_arrays;
-//     }
-
-//     char *line = strtok(topo_src, "\n");
-//     char **sources = NULL;
-//     int src_count = 0;
-
-//     while (line) {
-//         char **tmp = realloc(sources, sizeof(char *) * (src_count + 1));
-//         if (!tmp) {
-//             print_error("Memory allocation error.");
-//             free(topo_src);
-//             goto cleanup_sources;
-//         }
-//         sources = tmp;
-//         sources[src_count] = strdup(line);
-//         src_count++;
-//         line = strtok(NULL, "\n");
-//     }
-
-//     // Compile each source
-//     for (int i = 0; i < src_count; i++) {
-//         const char *src = sources[i];
-//         const char *rel_path = src + strlen("src") + 1;
-
-//         char rel_path_no_ext[512];
-//         strncpy(rel_path_no_ext, rel_path, sizeof(rel_path_no_ext));
-//         rel_path_no_ext[sizeof(rel_path_no_ext) - 1] = '\0';
-
-//         char *ext = strrchr(rel_path_no_ext, '.');
-//         if (ext && (strcmp(ext, ".f90") == 0 || strcmp(ext, ".for") == 0)) {
-//             *ext = '\0';
-//         }
-
-//         char obj_file[1024];
-//         snprintf(obj_file, sizeof(obj_file), "%s/%s.o", obj_dir, rel_path_no_ext);
-
-//         char compile_cmd[2048];
-
-//         snprintf(compile_cmd, sizeof(compile_cmd), "%s %s -J%s -c %s -o %s",
-//             compiler, flags_str, mod_dir, src, obj_file);
-
-//         print_info(compile_cmd);
-//         int ret = system(compile_cmd);
-//         if (ret != 0) {
-//             print_error("Compilation failed.");
-//             goto cleanup_sources;
-//         }
-//     }
-
-//     // Link
-//     char link_cmd[4096] = {0};
-//     size_t link_pos = 0;
-
-//     link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, "%s %s", compiler, flags_str);
-
-//     for (int i = 0; i < src_count; i++) {
-//         const char *src = sources[i];
-//         const char *rel_path = src + strlen("src") + 1;
-
-//         char rel_path_no_ext[512];
-//         strncpy(rel_path_no_ext, rel_path, sizeof(rel_path_no_ext));
-//         rel_path_no_ext[sizeof(rel_path_no_ext) - 1] = '\0';
-
-//         char *ext = strrchr(rel_path_no_ext, '.');
-//         if (ext && (strcmp(ext, ".f90") == 0 || strcmp(ext, ".for") == 0)) {
-//             *ext = '\0';
-//         }
-
-//         char obj_path[512];
-//         snprintf(obj_path, sizeof(obj_path), "%s/%s.o", obj_dir, rel_path_no_ext);
-
-//         link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " %s", obj_path);
-//     }
-
-//     link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " -o %s", target);
-
-//     print_info(link_cmd);
-//     int ret = system(link_cmd);
-//     if (ret != 0) {
-//         print_error("Linking failed.");
-//         goto cleanup_sources;
-//     }
-
-//     print_ok("Built Successfully");
-
-//     //For the incremental build, we parse the files!
-//     strcat(maketop_cmd," -m");
-//     char *topo_make = run_command_capture(maketop_cmd);
-
-//     //Always rebuild the hash table when we are done. 
-//     const char* deps_file = "build/topo.txt";
-//     FILE* depedency_chain = fopen(deps_file ,"w+");
-//     fprintf(depedency_chain,"%s",topo_make);
-//     fclose(depedency_chain);
-
-//     //Allocate the hashmaps.
-//     FileNode*  cur_map[HASH_TABLE_SIZE]  = {NULL};
-
-//     //Parse the dependency file first (we always need it)
-//     parse_dependency_file(deps_file,cur_map);
-
-//     //If hash file exists, load it and compare
-//     const char* hash_cache_file = "build/incremental_cache.txt";
-
-//     //Save updated hash list for future runs
-//     save_hashes(hash_cache_file,cur_map);
-
-// cleanup_sources:
-//     if (sources) {
-//         for (int i = 0; i < src_count; i++) free(sources[i]);
-//         free(sources);
-//     }
-//     free(topo_src);
-
-// cleanup_search_arrays:
-//     if (deep_dirs) {
-//         for (int i = 0; deep_dirs[i]; i++) free(deep_dirs[i]);
-//         free(deep_dirs);
-//     }
-//     if (shallow_dirs) {
-//         for (int i = 0; shallow_dirs[i]; i++) free(shallow_dirs[i]);
-//         free(shallow_dirs);
-//     }
-
-// cleanup_flags_str:
-//     free(flags_str);
-
-// cleanup_arrays:
-//     for (int i = 0; flags_array[i]; i++) free(flags_array[i]);
-//     free(flags_array);
-
-//     free_string_list(unique_flags, unique_count);
-
-//     fortuna_toml_free(&cfg);
-//     chdir(old_dir);
-
-//     free_all(cur_map);
-    
-//     return 0;
-// }
-
 

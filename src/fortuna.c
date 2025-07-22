@@ -118,6 +118,90 @@ void create_directories(const char *base_path) {
     }
 }
 
+int remove_folder_recursive(const char *path) {
+#ifdef _WIN32
+    WIN32_FIND_DATA ffd;
+    HANDLE hFind = INVALID_HANDLE_VALUE;
+    char search_path[MAX_PATH];
+    snprintf(search_path, MAX_PATH, "%s\\*", path);
+
+    hFind = FindFirstFile(search_path, &ffd);
+    if (INVALID_HANDLE_VALUE == hFind) {
+        fprintf(stderr, "FindFirstFile failed (%lu)\n", GetLastError());
+        return -1;
+    }
+
+    do {
+        if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+            continue;
+
+        char full_path[MAX_PATH];
+        snprintf(full_path, MAX_PATH, "%s\\%s", path, ffd.cFileName);
+
+        if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (remove_folder_recursive(full_path) != 0) {
+                FindClose(hFind);
+                return -1;
+            }
+        } else {
+            if (!DeleteFile(full_path)) {
+                fprintf(stderr, "Failed to delete file %s (%lu)\n", full_path, GetLastError());
+                FindClose(hFind);
+                return -1;
+            }
+        }
+    } while (FindNextFile(hFind, &ffd) != 0);
+
+    FindClose(hFind);
+
+    if (!RemoveDirectory(path)) {
+        fprintf(stderr, "Failed to remove directory %s (%lu)\n", path, GetLastError());
+        return -1;
+    }
+    return 0;
+
+#else
+    DIR *d = opendir(path);
+    if (!d) {
+        perror("opendir failed");
+        return -1;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+
+        char full_path[PATH_MAX];
+        snprintf(full_path, PATH_MAX, "%s/%s", path, entry->d_name);
+
+        struct stat statbuf;
+        if (lstat(full_path, &statbuf) != 0) {
+            perror("stat failed");
+            closedir(d);
+            return -1;
+        }
+
+        if (S_ISDIR(statbuf.st_mode)) {
+            if (remove_folder_recursive(full_path) != 0) {
+                closedir(d);
+                return -1;
+            }
+        } else {
+            if (unlink(full_path) != 0) {
+                perror("unlink failed");
+                closedir(d);
+                return -1;
+            }
+        }
+    }
+    closedir(d);
+    if (rmdir(path) != 0) {
+        perror("rmdir failed");
+        return -1;
+    }
+    return 0;
+#endif
+}
 
 
 // Modified copy_file to support destination path with base dir
@@ -439,14 +523,6 @@ int main(int argc, char *argv[]) {
         //Run the build
         fortuna_build_project_incremental(parallel_build,incremental_build,lib_only,run_flag);
 
-        //Check if we want to go through a makefile. This is deprecated now that everything works? 
-        // if(hashmap_contains(&args.args_map, "-m")){
-        //     run_make_in_build(project_dir);
-        // }else{
-        //     fortuna_build_project_incremental(project_dir,parallel_build,incremental_build );
-        // }
-
-
         //Safely exit
         return 0;
     }
@@ -456,7 +532,6 @@ int main(int argc, char *argv[]) {
 
         //Set the run flag
         run_flag = 1;
-
 
         //Load the toml file.
         const char* toml_path = FORTUNA_NAME;
@@ -485,6 +560,7 @@ int main(int argc, char *argv[]) {
 
             //Then we may need a rebuild so we have to check. 
             if(fortuna_build_project_incremental(parallel_build,incremental_build,lib_only,run_flag) < 0){
+                print_error("Build Error");
                 return -1;
             }
         }else{
@@ -524,6 +600,31 @@ int main(int argc, char *argv[]) {
                 return -1;
             }
         }
+    }
+
+
+    //Clean 
+    if (hashmap_contains_key_and_index(&args.args_map, "clean", 1)){
+       
+        //Load the toml file.
+        const char* toml_path = FORTUNA_NAME;
+        fortuna_toml_t cfg = {0};
+        if (fortuna_toml_load(toml_path, &cfg) != 0) {
+            print_error("Failed to load project.toml.");
+            return -1;
+        }
+
+        //Remove the directories.
+        const char *obj_dir = fortuna_toml_get_string(&cfg, "build.obj_dir");
+        if (obj_dir) remove_folder_recursive(obj_dir);
+
+        const char *mod_dir = fortuna_toml_get_string(&cfg, "build.mod_dir");
+        if (mod_dir) remove_folder_recursive(mod_dir);
+
+        //Make new directories
+        if (obj_dir) create_dir(obj_dir);
+        if (mod_dir) create_dir(mod_dir);
+
     }
     return 0;
 }
