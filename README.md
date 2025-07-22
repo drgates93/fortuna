@@ -44,6 +44,9 @@ fortean run <project-name>      # Build and run the executable
 | `-r`, `--rebuild` | Disable incremental build          |
 | `--bin`           | Skip build and run target bin given by name |
 | `--lib`           | Force build of library only        |
+| `clean`           | Clean the obj_dir and mod_dir      |
+| `run`               | Re-builds as needed and runs the executable if successful |
+| `new`               | Generates a new project dir with some name specified after new |
 
 ---
 
