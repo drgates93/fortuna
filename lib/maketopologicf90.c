@@ -1,26 +1,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 #include <ctype.h>
 #include <assert.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <stdbool.h>
 
 
-//Defines for the data.
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <unistd.h>
+#endif
+
 #define INITIAL_FILE_CAPACITY 1024
-#define MAX_FILE_CAPACITY     100000
-#define MAX_FILENAME_LEN      512
+#define MAX_FILE_CAPACITY 4096
 #define INITIAL_USES_CAPACITY 16
-#define MAX_USES_CAPACITY     16384
-#define MAX_LINE              1024
-#define MAX_MODULE_LEN        128
-#define HASH_SIZE             16384
+#define MAX_USES_CAPACITY 1024
+#define MAX_LINE 1024
+#define MAX_MODULE_LEN 128
+#define HASH_SIZE 16384
+#define CHUNK_SIZE 4096
 
+typedef struct ProjectFile {
+    char filename[1024];
+    char module_name[MAX_MODULE_LEN];  // lowercase, null-terminated
+    int *uses;       // store indices of modules used (indices in files[])
+    int uses_count;
+    int uses_capacity;
+} ProjectFile;
 
-//Hashtable defintions for the third type.
+static ProjectFile *files = NULL;
+static int file_count = 0;
+static int file_capacity = 0;
+
 typedef struct HashEntry {
     char key[MAX_MODULE_LEN];
     int value;
@@ -76,266 +90,257 @@ void free_hash_table(void) {
     }
 }
 
-typedef struct FileEntry {
-    char filename[MAX_FILENAME_LEN];
-    char **module_names;   // dynamic array of module names (lowercased) for Fortran, header names for C
-    int module_count;
-    int module_capacity;
-    int *uses;             // indices of dependencies
-    int uses_count;
-    int uses_capacity;
-    bool is_fortran;
-    bool is_header;  // Need to track the header files, but note that they are not actually rebuilt. 
-} FileEntry;
-
-static FileEntry *files = NULL;
-static int file_count = 0;
-static int file_capacity = 0;
-
-static inline int strncasecmp_prefix(const char *a, const char *b, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        unsigned char ca = (unsigned char)a[i];
-        unsigned char cb = (unsigned char)b[i];
-        if (tolower(ca) != tolower(cb) || ca == '\0' || cb == '\0')
-            return (int)(tolower(ca) - tolower(cb));
+void str_tolower(char *s) {
+    while (*s) {
+        *s = (char)tolower((unsigned char)*s);
+        s++;
     }
-    return 0;
 }
 
-static inline int is_use_stmt(const char *ptr) {
-    return strncasecmp_prefix(ptr, "use", 3) == 0 && isspace((unsigned char)ptr[3]);
-}
-
-static inline int is_module_stmt(const char *ptr) {
-    return strncasecmp_prefix(ptr, "module", 6) == 0 && isspace((unsigned char)ptr[6]);
-}
-
-static inline char *extract_token_lower(char *ptr, char *dst, size_t dst_size) {
-    while (*ptr && isspace((unsigned char)*ptr)) ptr++;
-    size_t i = 0;
-    while (*ptr && !isspace((unsigned char)*ptr) && *ptr != ',' && *ptr != '\n' && i < dst_size - 1) {
-        dst[i++] = (char)tolower((unsigned char)*ptr++);
-    }
-    dst[i] = 0;
-    return ptr;
-}
-
-//Check if it is a space token
-static inline int is_space_token(unsigned char* s){
-    return (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' || *s == '\f' || *s == '\v');
-}
-
-static inline char *trim(char *str) {
-    unsigned char *s = (unsigned char *)str;
-    unsigned char *end;
-
-    // Trim leading space
-    while (*s && is_space_token(s)) s++;
-    if (*s == 0) return (char*)s;
-
-    // Find end of string
-    end = s;
-    while (*end) end++;
-    end--;
-
-    // Trim trailing space
-    while (end > s && is_space_token(end)) end--;
-    *(end + 1) = '\0';
-    return (char*) s;
+char *trim(char *str) {
+    while (isspace((unsigned char)*str)) str++;
+    if (*str == 0) return str;
+    char *end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) *end-- = 0;
+    return str;
 }
 
 void ensure_file_capacity(void) {
     if (file_count >= file_capacity) {
-        int new_cap = file_capacity ? file_capacity * 2 : 128;
-        files = realloc(files, new_cap * sizeof(FileEntry));
-        assert(files);
-        for (int i = file_capacity; i < new_cap; i++) {
-            files[i].module_names = NULL;
-            files[i].module_capacity = 0;
-            files[i].module_count = 0;
-            files[i].uses = NULL;
-            files[i].uses_capacity = 0;
-            files[i].uses_count = 0;
-        }
-        file_capacity = new_cap;
-    }
-}
-
-void add_module_name(FileEntry *fe, const char *name) {
-    if (fe->module_count >= fe->module_capacity) {
-        fe->module_capacity = fe->module_capacity ? fe->module_capacity * 2 : 4;
-        fe->module_names = realloc(fe->module_names, fe->module_capacity * sizeof(char *));
-        assert(fe->module_names);
-    }
-    fe->module_names[fe->module_count] = strdup(name);
-    assert(fe->module_names[fe->module_count]);
-    fe->module_count++;
-}
-
-void add_used_file(int file_idx, int dep_idx) {
-    FileEntry *f = &files[file_idx];
-    for (int i = 0; i < f->uses_count; i++) {
-        if (f->uses[i] == dep_idx) return;
-    }
-    if (f->uses_count >= f->uses_capacity) {
-        f->uses_capacity = f->uses_capacity ? f->uses_capacity * 2 : INITIAL_USES_CAPACITY;
-        f->uses = realloc(f->uses, f->uses_capacity * sizeof(int));
-        assert(f->uses);
-    }
-    f->uses[f->uses_count++] = dep_idx;
-}
-
-
-
-static void parse_fortran_dependencies(int file_idx) {
-    char line[1024], token[MAX_MODULE_LEN];
-    FILE *fp = fopen(files[file_idx].filename, "r");
-    if (!fp) return;
-
-    while (fgets(line, sizeof(line), fp)) {
-        char *ptr = line;
-        while (*ptr && isspace((unsigned char)*ptr)) ptr++;
-
-        if (is_use_stmt(ptr)) {
-            ptr += 3;
-            ptr = extract_token_lower(ptr, token, sizeof(token));
-            int idx = hash_lookup(token);
-            if (idx != -1) {
-                add_used_file(file_idx, idx);
-            }
-        } else if (is_module_stmt(ptr)) {
-            ptr += 6;
-            ptr = extract_token_lower(ptr, token, sizeof(token));
-            add_module_name(&files[file_idx], token);
-            hash_insert(token, file_idx);
-        }
-    }
-    fclose(fp);
-}
-
-int add_used_header(int file_idx, const char *name) {
-    FileEntry *f = &files[file_idx];
-    // Check duplicates
-    for (int i = 0; i < f->module_count; i++) {
-        if (strcmp(f->module_names[i], name) == 0)
-            return 0; // already added
-    }
-
-    // Expand module_names
-    if (f->module_count >= f->module_capacity) {
-        int new_capacity = f->module_capacity ? f->module_capacity * 2 : 8;
-        char **new_names = realloc(f->module_names, new_capacity * sizeof(char *));
-        if (!new_names) {
-            perror("realloc");
+        int new_capacity = file_capacity == 0 ? INITIAL_FILE_CAPACITY : file_capacity * 2;
+        assert(new_capacity <= MAX_FILE_CAPACITY && "Exceeded max number of files");
+        ProjectFile *new_files = realloc(files, new_capacity * sizeof(ProjectFile));
+        if (!new_files) {
+            fprintf(stderr, "realloc failed for files\n");
             exit(1);
         }
-        f->module_names = new_names;
-        f->module_capacity = new_capacity;
+        // Initialize new entries
+        for (int i = file_capacity; i < new_capacity; i++) {
+            new_files[i].uses = NULL;
+            new_files[i].uses_capacity = 0;
+            new_files[i].uses_count = 0;
+            new_files[i].module_name[0] = 0;
+            new_files[i].filename[0] = 0;
+        }
+        files = new_files;
+        file_capacity = new_capacity;
     }
-
-    f->module_names[f->module_count] = strdup(name);
-    if (!f->module_names[f->module_count]) {
-        perror("strdup");
-        exit(1);
-    }
-    f->module_count++;
-    return 1;
 }
-static void parse_c_dependencies(int file_idx) {
-    char line[1024], token[MAX_FILENAME_LEN];
-    FILE *fp = fopen(files[file_idx].filename, "r");
-    if (!fp) return;
 
-    while (fgets(line, sizeof(line), fp)) {
-        char *ptr = line;
-        while (*ptr && isspace((unsigned char)*ptr)) ptr++;
-        if (strncmp(ptr, "#include", 8) == 0) {
-            ptr += 8;
-            while (*ptr && isspace((unsigned char)*ptr)) ptr++;
-            if (*ptr == '"') {
-                ptr++;
-                size_t j = 0;
-                while (*ptr && *ptr != '"' && j < sizeof(token) - 1) {
-                    token[j++] = *ptr++;
-                }
-                token[j] = '\0';
+void ensure_uses_capacity(int idx) {
+    ProjectFile *f = &files[idx];
+    if (f->uses_count >= f->uses_capacity) {
+        int new_capacity = f->uses_capacity == 0 ? INITIAL_USES_CAPACITY : f->uses_capacity * 2;
+        assert(new_capacity <= MAX_USES_CAPACITY && "Exceeded max uses per file");
+        int *new_uses = realloc(f->uses, new_capacity * sizeof(int));
+        if (!new_uses) {
+            fprintf(stderr, "realloc failed for uses\n");
+            exit(1);
+        }
+        f->uses = new_uses;
+        f->uses_capacity = new_capacity;
+    }
+}
 
-                // Look for matching tracked header files only.
-                for (int k = 0; k < file_count; k++) {
-                    const char *fname = strrchr(files[k].filename, '/');
-                    fname = fname ? fname + 1 : files[k].filename;
-                    if (strcmp(fname, token) == 0) {
-                        add_used_file(file_idx, k);
-                        break;
-                    }
-                }
+void add_used_module(int file_idx, int used_idx) {
+    ProjectFile *f = &files[file_idx];
+    for (int i = 0; i < f->uses_count; i++) {
+        if (f->uses[i] == used_idx) return;
+    }
+    ensure_uses_capacity(file_idx);
+    f->uses[f->uses_count++] = used_idx;
+}
+
+int strcmp_case_insensitive(char const *a, char const *b)
+{
+    for (;; a++, b++) {
+        int d = tolower((unsigned char)*a) - tolower((unsigned char)*b);
+        if (d != 0 || !*a)
+            return d;
+    }
+}
+
+void parse_module_definition(char *line, int idx) {
+    char *p = trim(line);
+    if (strncasecmp(p, "module ", 7) == 0) {
+        char *modname = p + 7;
+        modname = trim(modname);
+        str_tolower(modname);
+        strncpy(files[idx].module_name, modname, MAX_MODULE_LEN - 1);
+        files[idx].module_name[MAX_MODULE_LEN - 1] = '\0';
+        hash_insert(modname, idx);
+    }
+}
+
+void parse_use_statement(char *line, int idx) {
+    char *p = trim(line);
+    if (strncasecmp(p, "use", 3) != 0) return;
+    p += 3;
+    while (*p == ' ' || *p == ',' || *p == ':') p++;
+    if (*p == ':' && *(p + 1) == ':') {
+        p += 2;
+        while (*p == ' ') p++;
+    }
+    char modname[MAX_MODULE_LEN];
+    int i = 0;
+    while (*p && !isspace((unsigned char)*p) && *p != ',' && i < MAX_MODULE_LEN - 1)
+        modname[i++] = (char)tolower((unsigned char)*p++);
+    modname[i] = '\0';
+    int dep_idx = hash_lookup(modname);
+    if (dep_idx != -1) add_used_module(idx, dep_idx);
+}
+
+
+void parse_include_statement(char *line, int idx) {
+    char header_name[MAX_MODULE_LEN];
+    char *p = trim(line);
+    if (strncmp(p, "#include", 8) == 0) {
+        char *start = strchr(p, '"');
+        if (start) {
+            char *end = strchr(start + 1, '"');
+            if (end && (end - start - 1) < MAX_MODULE_LEN) {
+                strncpy(header_name, start + 1, end - start - 1);
+                header_name[end - start - 1] = '\0';
+                int dep_idx = hash_lookup(header_name);
+                if (dep_idx != -1) add_used_module(idx, dep_idx);
             }
         }
     }
-    fclose(fp);
 }
-    
 
-void parse_file_dependencies(void) {
-    for (int i = 0; i < file_count; i++) {
-        if (files[i].is_fortran) {
-            parse_fortran_dependencies(i);
-        } else {
-            parse_c_dependencies(i);
-        }
+void parse_line_for_dep(char *line, const char *filename, int file_idx, int mode) {
+    // Fortran
+    if (strstr(filename, ".f")) {
+        if (mode == 0) parse_module_definition(line, file_idx);
+        else parse_use_statement(line, file_idx);
     }
-}
 
-void initialize_file_entry(FileEntry *entry, const char *filepath, 
-                          bool is_fortran_flag, bool is_header_flag) {
-    strncpy(entry->filename, filepath, sizeof(entry->filename) - 1);
-    entry->filename[sizeof(entry->filename) - 1] = '\0';
-    entry->is_fortran      = is_fortran_flag;
-    entry->is_header       = is_header_flag;
-    entry->module_names    = NULL;
-    entry->module_count    = 0;
-    entry->module_capacity = 0;
-    entry->uses            = NULL;
-    entry->uses_count      = 0;
-    entry->uses_capacity   = 0;
-    return;
+    // C
+    if (strstr(filename, ".c")) {
+        if (mode == 1) parse_include_statement(line, file_idx);
+    }
 }
 
 void read_files_in_dir(const char *dir_path, int recursive) {
-    DIR *dir = opendir(dir_path);
-    if (!dir) {
+#ifdef _WIN32
+    WIN32_FIND_DATA fd;
+    char search_path[MAX_PATH];
+    snprintf(search_path, sizeof(search_path), "%s\\*", dir_path);
+
+    HANDLE hFind = FindFirstFile(search_path, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Could not open directory: %s\n", dir_path);
+        exit(1);
+    }
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
+
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "%s/%s", dir_path, fd.cFileName);
+
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (recursive) {
+                read_files_in_dir(path, recursive);
+            }
+        } else {
+            if (strstr(fd.cFileName, ".f") || strstr(fd.cFileName, ".c")) {
+                ensure_file_capacity();
+                strncpy(files[file_count].filename, path, sizeof(files[file_count].filename) - 1);
+                files[file_count].filename[sizeof(files[file_count].filename) - 1] = '\0';
+                file_count++;
+            }
+        }
+    } while (FindNextFile(hFind, &fd));
+    FindClose(hFind);
+#else
+    DIR *d = opendir(dir_path);
+    if (!d) {
         perror(dir_path);
         exit(1);
     }
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) continue;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
 
-        char full_path[MAX_FILENAME_LEN];
-        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir_path, de->d_name);
 
         struct stat st;
-        if (stat(full_path, &st) == -1) continue;
+        if (stat(path, &st) == -1) {
+            perror(path);
+            continue;
+        }
 
         if (S_ISDIR(st.st_mode)) {
-            if (recursive) read_files_in_dir(full_path, recursive);
+            if (recursive) {
+                read_files_in_dir(path, recursive);
+            }
         } else if (S_ISREG(st.st_mode)) {
-            size_t name_len = strlen(entry->d_name);
-            bool is_fortran = (name_len >= 4 && (strcasecmp(entry->d_name + name_len - 4, ".f90") == 0 
-                                             ||  strcasecmp(entry->d_name + name_len - 4, ".for") == 0
-                                             ||  strcasecmp(entry->d_name + name_len - 4, ".f")   == 0));
-            bool is_c       = (name_len >= 2 && (strcasecmp(entry->d_name + name_len - 2, ".c") == 0));
-            bool is_header  = (name_len >= 2 && (strcasecmp(entry->d_name + name_len - 2, ".h") == 0));
-
-            if (is_fortran || is_c || is_header) {
+            if (strstr(de->d_name, ".f") || strstr(de->d_name, ".c")) {
                 ensure_file_capacity();
-                FileEntry *file_entry = &files[file_count];
-                initialize_file_entry(file_entry, full_path, is_fortran, is_header);
+                strncpy(files[file_count].filename, path, sizeof(files[file_count].filename) - 1);
+                files[file_count].filename[sizeof(files[file_count].filename) - 1] = '\0';
                 file_count++;
             }
         }
     }
-    closedir(dir);
+    closedir(d);
+#endif
+}
+
+
+//Buffered read of the files in chunks before parsing for the depedencies.
+void process_modules_in_file(const char *filename, int file_idx, int mode) {
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) { perror(filename); exit(1); }
+
+    char *buffer = malloc(CHUNK_SIZE * 2);
+    if (!buffer) { fprintf(stderr, "malloc failed\n"); exit(1); }
+
+    size_t leftover = 0;
+    while (1) {
+        size_t n = fread(buffer + leftover, 1, CHUNK_SIZE, fp);
+        if (n == 0 && leftover == 0) break;
+
+        size_t total = leftover + n;
+        buffer[total] = '\0';
+
+        size_t line_start = 0;
+        for (size_t i = 0; i < total; i++) {
+            if (buffer[i] == '\n') {
+                buffer[i] = '\0';
+                parse_line_for_dep(buffer + line_start, filename, file_idx, mode);
+                line_start = i + 1;
+            }
+        }
+
+        leftover = total - line_start;
+        if (leftover > 0) memmove(buffer, buffer + line_start, leftover);
+
+        if (n == 0) {
+            if (leftover > 0) {
+                buffer[leftover] = '\0';
+                parse_line_for_dep(buffer, filename, file_idx, mode);
+            }
+            break;
+        }
+    }
+
+    free(buffer);
+    fclose(fp);
+}
+
+
+void process_directories(){
+    // First pass: definitions
+    for (int i = 0; i < file_count; i++) {
+        process_modules_in_file(files[i].filename, i, 0);
+    }
+
+    // Second pass: usages
+    for (int i = 0; i < file_count; i++) {
+        process_modules_in_file(files[i].filename, i, 1);
+    }
 }
 
 typedef struct {
@@ -374,7 +379,7 @@ void build_graph(void) {
         in_degree[i] = 0;
     }
     for (int i = 0; i < file_count; i++) {
-        FileEntry *f = &files[i];
+        ProjectFile *f = &files[i];
         for (int j = 0; j < f->uses_count; j++) {
             int dep = f->uses[j];
             ensure_adj_capacity(dep);
@@ -385,7 +390,6 @@ void build_graph(void) {
 }
 
 //Topological sort of files based on module dependencies
-//Using Khadane's algorithm.
 //  Returns 1 if we could sort
 //  Returns 0 if we detected a cycle. 
 int topologic_sort(int *sorted, int *sorted_len) {
@@ -416,14 +420,10 @@ int topologic_sort(int *sorted, int *sorted_len) {
     return 1;
 }
 
-/**
- * split_dirs - splits comma separated list of directories into array
- * list: string containing comma-separated directory list
- * count: pointer to store number of directories parsed
- *
- * Returns dynamically allocated array of strings (each dynamically allocated)
- * Caller must free strings and array.
- */
+
+//split_dirs - splits comma separated list of directories into array
+//list: string containing comma-separated directory list
+//count: pointer to store number of directories parsed
 char **split_dirs(char *list, int *count) {
     int capacity = 8;
     char **dirs = malloc(capacity * sizeof(char *));
@@ -601,22 +601,12 @@ int main(int argc, char **argv) {
     free_dirs(D_dirs, D_count);
 
     if (file_count == 0) {
-        fprintf(stderr, "No .f90 files found to process.\n");
+        fprintf(stderr, "No files found to process.\n");
         return 1;
     }
 
-    //Find all the modules prefaced by module module_name
-    //Allows for multiple modules in the file and stores them in 
-    //the hash table as (filename, index in filelist)
-
-    //Find all the actual used module name / #include statements and then lookup if it's
-    //in the hashtable. If it is, we store it in the used file list. 
-    //That is, we store the index of the file 
-    // [1,0,0,0,0,0] => Single module
-    // [1,1,0,0,0,0] => Second file depends on the first if we have an index in element 0. 
-    parse_file_dependencies();
-
-
+    //Process the files
+    process_directories();
 
     //Build the adjacency graph by the files the module name appears in.
     //This is the entire graph of dependencies when that list is topologically sorted. 
@@ -644,24 +634,17 @@ int main(int argc, char **argv) {
         // Print Makefile dependency list: filename: dependencies filenames...
         for (int i = 0; i < file_count; i++) {
             int idx = sorted[i];
-            if (files[idx].is_header) continue;
             printf("%s:", files[idx].filename);
-            FileEntry *f = &files[idx];
+            ProjectFile *f = &files[idx];
             for (int u = 0; u < f->uses_count; u++) {
                 int dep_idx = f->uses[u];
                 printf(" %s", files[dep_idx].filename);
-            }
-
-            // Print module names and headers (strings) that are dependencies but not tracked as files
-            for (int m = 0; m < f->module_count; m++) {
-                printf(" %s", f->module_names[m]);
             }
             printf("\n");
         }
     } else {
         // Print build order (filenames only)
         for (int i = 0; i < file_count; i++) {
-            if (files[sorted[i]].is_header) continue;
             printf("%s\n", files[sorted[i]].filename);
         }
     }
