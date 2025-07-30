@@ -210,7 +210,7 @@ void parse_include_statement(char *line, int idx) {
 
 void parse_line_for_dep(char *line, const char *filename, int file_idx, int mode) {
     // Fortran
-    if (strstr(filename, ".f")) {
+    if (strstr(filename, ".f") || strstr(filename, ".F") ) {
         if (mode == 0) parse_module_definition(line, file_idx);
         else parse_use_statement(line, file_idx);
     }
@@ -243,7 +243,7 @@ void read_files_in_dir(const char *dir_path, int recursive) {
                 read_files_in_dir(path, recursive);
             }
         } else {
-            if (strstr(fd.cFileName, ".f") || strstr(fd.cFileName, ".c")) {
+            if (strstr(fd.cFileName, ".f") || strstr(fd.cFileName, ".c") || strstr(fd.cFileName, ".F")) {
                 ensure_file_capacity();
                 strncpy(files[file_count].filename, path, sizeof(files[file_count].filename) - 1);
                 files[file_count].filename[sizeof(files[file_count].filename) - 1] = '\0';
@@ -276,7 +276,7 @@ void read_files_in_dir(const char *dir_path, int recursive) {
                 read_files_in_dir(path, recursive);
             }
         } else if (S_ISREG(st.st_mode)) {
-            if (strstr(de->d_name, ".f") || strstr(de->d_name, ".c")) {
+            if (strstr(de->d_name, ".f") || strstr(de->d_name, ".c") || strstr(de->d_name, ".F") ) {
                 ensure_file_capacity();
                 strncpy(files[file_count].filename, path, sizeof(files[file_count].filename) - 1);
                 files[file_count].filename[sizeof(files[file_count].filename) - 1] = '\0';
