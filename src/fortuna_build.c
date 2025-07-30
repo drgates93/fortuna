@@ -53,6 +53,51 @@ int make_dir(const char *path) {
     return -1;
 }
 
+int count_files_in_directory(const char *path) {
+    int count = 0;
+
+#ifdef _WIN32
+    WIN32_FIND_DATA fd;
+    char search_path[MAX_PATH];
+    snprintf(search_path, MAX_PATH, "%s\\*", path);
+
+    HANDLE hFind = FindFirstFile(search_path, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return -1;  // error
+    }
+
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            count++;
+        }
+    } while (FindNextFile(hFind, &fd));
+
+    FindClose(hFind);
+
+#else
+    DIR *dir;
+    struct dirent *entry;
+    struct stat st;
+    char fullpath[1024];
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        return -1;  // error
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", path, entry->d_name);
+        if (stat(fullpath, &st) == 0 && S_ISREG(st.st_mode)) {
+            count++;
+        }
+    }
+
+    closedir(dir);
+#endif
+
+    return count;
+}
+
 //This allows for nested src files in any number of directories
 //to be parsed into just the filename and thus we can put them in the
 //object directory. We only rebuild if the src changes, not the obj. 
@@ -220,8 +265,8 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
                                    const char *mod_dir,
                                    const char *target_name,
                                    char **exclude_files,
-                                   const int parallel_build,
-                                   const int incremental_build,
+                                   int parallel_build,
+                                   int incremental_build,
                                    const int lib_only,
                                    const int run_flag,
                                    const int is_c) {
@@ -244,6 +289,9 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
             insert_node(exclude_files[i],exclusion_map);
         }
     }
+
+    //Count the object files
+    int obj_cnt = count_files_in_directory(obj_dir);
 
     //From the list of topologically sorted files, we need to parse them
     //properly as they are a single string. 
@@ -271,6 +319,12 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
         sources[src_count] = strdup(line);
         src_count++;
         line = strtok(NULL, "\n");
+    }
+
+    //Trigger a full rebuild because we don't have a match
+    if(src_count != obj_cnt){
+        incremental_build = 0;
+        parallel_build    = 0;
     }
 
     //Define the rebuild count

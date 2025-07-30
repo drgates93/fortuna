@@ -441,11 +441,11 @@ int main(int argc, char *argv[]) {
 
     if (cli_args_parse(&args, argc, argv) != 0) {
         print_error("Failed to cli parse arguments\n");
-        return 1;
+        return 0;
     }
 
     if(argc < 2){
-        printf("Not enough cli arguments detected\n");
+        print_error("Not enough cli arguments detected\n");
         return 0;
     }
 
@@ -560,7 +560,7 @@ int main(int argc, char *argv[]) {
 
             //Then we may need a rebuild so we have to check. 
             if(fortuna_build_project_incremental(parallel_build,incremental_build,lib_only,run_flag) < 0){
-                print_error("Build Error");
+                //print_error("Build Error");
                 return -1;
             }
         }else{
