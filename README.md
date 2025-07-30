@@ -32,8 +32,8 @@ make install
 
 ```bash
 fortean new <project-name>      # Initialize a new Fortran project
-fortean build <project-name>    # Build the project
-fortean run <project-name>      # Build and run the executable
+fortean build     # Build the project
+fortean run      # Build and run the executable
 ```
 
 #### Flags:
