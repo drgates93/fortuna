@@ -402,8 +402,17 @@ void append_to_rebuild_list(FileNode **rebuild_list, const char *filename) {
     if (is_in_rebuild_list(filename, *rebuild_list)) return;
 
     FileNode *node = new_file_node(filename);
-    node->next = *rebuild_list;
-    *rebuild_list = node;
+    node->next = NULL;
+
+    if (*rebuild_list == NULL) {
+        *rebuild_list = node;
+    } else {
+        FileNode *curr = *rebuild_list;
+        while (curr->next != NULL) {
+            curr = curr->next;
+        }
+        curr->next = node;
+    }
 }
 
 // Recursive marking + hash table pruning
@@ -413,6 +422,7 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
     FileNode *node   = hash_table[idx];
 
     while (node) {
+
         if (strcmp(node->filename, filename) == 0) {
             append_to_rebuild_list(rebuild_list, node->filename);
 

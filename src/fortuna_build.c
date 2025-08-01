@@ -98,6 +98,111 @@ int count_files_in_directory(const char *path) {
     return count;
 }
 
+#define CHUNK_SIZE 4096
+
+// Trim leading/trailing spaces
+char *trim(char *str) {
+    while (isspace((unsigned char)*str)) str++;
+    if (*str == 0) return str;
+    char *end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end)) *end-- = 0;
+    return str;
+}
+
+// Extract module name if it's a module definition (not module procedure)
+char *parse_module_definition(char *line) {
+    char *p = trim(line);
+
+    if (*p == '\0' || *p == '!') return NULL;
+
+    if (strncasecmp(p, "module procedure", 16) == 0)
+        return NULL;
+
+    if (strncasecmp(p, "module ", 7) == 0) {
+        char *modname = p + 7;
+
+        // Trim trailing comments or extra tokens
+        while (*modname && isspace((unsigned char)*modname)) modname++;
+
+        // Copy name until space or comment
+        char namebuf[256];
+        int i = 0;
+        while (*modname && !isspace((unsigned char)*modname) && *modname != '!' && i < 255) {
+            namebuf[i++] = tolower(*modname++);
+        }
+        namebuf[i] = '\0';
+
+        if (i == 0) return NULL;
+
+        // Allocate and return "modulename.mod"
+        char *result = malloc(strlen(namebuf) + 5);
+        if (!result) return NULL;
+        sprintf(result, "%s.mod", namebuf);
+        return result;
+    }
+
+    return NULL;
+}
+
+char *parse_line_for_dep(char *line, const char *filename) {
+    if (strstr(filename, ".f") || strstr(filename, ".F")) {
+        return parse_module_definition(line);
+    }
+    return NULL;
+}
+
+// Buffered file reader that returns module .mod name
+char *get_module_filename(const char *filename) {
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) { perror(filename); exit(1); }
+
+    char *buffer = malloc(CHUNK_SIZE + 1);
+    char *linebuf = malloc(CHUNK_SIZE * 2);
+    if (!buffer || !linebuf) {
+        fprintf(stderr, "malloc failed\n");
+        exit(1);
+    }
+
+    size_t line_len = 0;
+    char *modname = NULL;
+
+    while (!feof(fp)) {
+        size_t n = fread(buffer, 1, CHUNK_SIZE, fp);
+        buffer[n] = '\0';
+
+        size_t i = 0;
+        while (i < n) {
+            char *newline = memchr(buffer + i, '\n', n - i);
+            size_t chunk_len = newline ? (newline - (buffer + i) + 1) : (n - i);
+
+            memcpy(linebuf + line_len, buffer + i, chunk_len);
+            line_len += chunk_len;
+
+            if (newline) {
+                linebuf[line_len] = '\0';
+                modname = parse_line_for_dep(linebuf, filename);
+                if (modname) goto done;
+                line_len = 0;
+                i += chunk_len;
+            } else {
+                i += chunk_len;
+            }
+        }
+    }
+
+    // Final incomplete line
+    if (line_len > 0) {
+        linebuf[line_len] = '\0';
+        modname = parse_line_for_dep(linebuf, filename);
+    }
+
+done:
+    free(buffer);
+    free(linebuf);
+    fclose(fp);
+    return modname;  // NULL if none found
+}
+
 //This allows for nested src files in any number of directories
 //to be parsed into just the filename and thus we can put them in the
 //object directory. We only rebuild if the src changes, not the obj. 
@@ -295,10 +400,10 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
 
     //From the list of topologically sorted files, we need to parse them
     //properly as they are a single string. 
-    char *line     = strtok(topo_src, "\n");
-    char **sources = NULL;
-    int src_count  = 0;
-    char **tmp     = NULL;
+    char *line           = strtok(topo_src, "\n");
+    char **sources       = NULL;
+    int src_count        = 0;
+    char **tmp           = NULL;
     while (line) {
         tmp = realloc(sources, sizeof(char *)*(src_count + 1));
         if (!tmp) {
@@ -319,9 +424,12 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
         sources[src_count] = strdup(line);
         src_count++;
         line = strtok(NULL, "\n");
+
     }
 
-    //Trigger a full rebuild because we don't have a match
+    //Trigger a full rebuild because we don't have a match for the number of
+    //object files and the number of src files. Same with mod files? Not quite. 
+    //we really only need to rebuild the chain for the mod files. 
     if(src_count != obj_cnt){
         incremental_build = 0;
         parallel_build    = 0;
@@ -339,6 +447,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     //Allocate the characetr buffers
     char compile_cmd[2048];
     char obj_file[1024];
+    char mod_file[1024];
 
     //For the incremental build, we parse the dependency files and rebuild. 
     if(incremental_build){
@@ -370,7 +479,6 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
             goto defer_core;
         }
 
-
         //Check the hash table for what we need to build.
         FileNode *rebuild_list = NULL;
         for (int i = 0; i < HASH_TABLE_SIZE; i++) {
@@ -380,6 +488,15 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
                 if (!file_is_unchanged(node->filename, node->file_hash, prev_map)) {
                     // It changed — mark its dependents
                     mark_dependents_for_rebuild(node->filename, cur_map, &rebuild_list, &rebuild_cnt);
+                }
+
+                //Check the chain for the mod file
+                const char* module_name = get_module_filename(node->filename);
+                if(module_name) {
+                    snprintf(mod_file, sizeof(mod_file), "%s%c%s", mod_dir, PATH_SEP, module_name);
+                    if(!file_exists(mod_file)) {
+                        mark_dependents_for_rebuild(node->filename, cur_map, &rebuild_list, &rebuild_cnt);
+                    }
                 }
                 node = node->next;
             }
@@ -397,6 +514,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
         FileNode *curr = rebuild_list;
         while(curr){
             const char *src = curr->filename;
+            printf("%s \n",src);
 
             //Check the exclusion list here. This can break a build,
             //but that is the correct behavior if asked. 
