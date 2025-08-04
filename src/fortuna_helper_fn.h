@@ -15,5 +15,6 @@ void print_ok(const char *msg);
 void print_info(const char *msg);
 void print_error(const char *msg);
 void print_test(const char *msg);
+int launch_process(const char *exe, const char *args);
 
 #endif

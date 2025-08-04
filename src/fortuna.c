@@ -300,7 +300,9 @@ int generate_project_toml(const char *project_name) {
         "#files = [\"src/some_file.f90\"] \n\n"
         "[lib]\n"
         "#Placed in the lib folder and only supports static linking with ar\n"
-        "#target = \"%s.lib\"\n",
+        "#target = \"%s.lib\"\n\n"
+        "[args]\n"
+        "#cmds = [\"cmd_line_argument\"] \n\n",
         project_name,project_name
     );
 
@@ -579,9 +581,13 @@ int main(int argc, char *argv[]) {
             snprintf(exe,sizeof(exe),"%s",target);
         #endif
 
+
+        //Check for arguments
+        const char *cmd = fortuna_toml_get_string(&cfg, "args.cmd");
+
         //Check if file exists first
         if(file_exists_generic(exe)) {
-            system(exe);
+            launch_process(exe,cmd);
         }else{
 
             //Rebuild the project from scratch.
@@ -592,7 +598,7 @@ int main(int argc, char *argv[]) {
 
             //Then check if the executable exists. If it does not, then print an error message. 
             if(file_exists_generic(exe)){
-                system(exe);
+                launch_process(exe,cmd);
             }else{
                 char msg[256];
                 snprintf(msg,sizeof(msg),"Executable named %s not found",exe);

@@ -213,10 +213,10 @@ char *get_last_path_segment(const char *path) {
     return strdup(p); 
 }
 
-// Worker thread: runs system() on a single command string
+// Worker thread: launches a process per thread
 void compile_system_worker(void *arg) {
     char *cmd = (char *)arg;
-    int ret = system(cmd);
+    int ret = launch_process(cmd,NULL);
     if (ret != 0) {
         print_error("Compilation failed: %s\n");
         return;
@@ -428,8 +428,9 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     }
 
     //Trigger a full rebuild because we don't have a match for the number of
-    //object files and the number of src files. Same with mod files? Not quite. 
-    //we really only need to rebuild the chain for the mod files. 
+    //object files and the number of src files. We can't just rebuild some obj
+    //files and not others because this case would be weird enough that maybe a file
+    //was renamed to a different one and now we have a problem. 
     if(src_count != obj_cnt){
         incremental_build = 0;
         parallel_build    = 0;
@@ -449,7 +450,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     char obj_file[1024];
     char mod_file[1024];
 
-    //For the incremental build, we parse the dependency files and rebuild. 
+    //For the incremental build, we parse the dependency chain and rebuild. 
     if(incremental_build){
         strcat(maketop_cmd," -m");
         char *topo_make = run_command_capture(maketop_cmd);
@@ -490,12 +491,17 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
                     mark_dependents_for_rebuild(node->filename, cur_map, &rebuild_list, &rebuild_cnt);
                 }
 
-                //Check the chain for the mod file
+                //Check the whether we built the mod file successfully on a previous run. 
                 const char* module_name = get_module_filename(node->filename);
                 if(module_name) {
+
+                    //If the mod files does not exist, we need to rebuild it.
+                    //This is because either the previous compilation failed
+                    //or the files were deleted/moved. Either way, we need it! 
                     snprintf(mod_file, sizeof(mod_file), "%s%c%s", mod_dir, PATH_SEP, module_name);
                     if(!file_exists(mod_file)) {
-                        mark_dependents_for_rebuild(node->filename, cur_map, &rebuild_list, &rebuild_cnt);
+                        append_to_rebuild_list(&rebuild_list, node->filename);
+                        rebuild_cnt++;
                     }
                 }
                 node = node->next;
@@ -514,7 +520,6 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
         FileNode *curr = rebuild_list;
         while(curr){
             const char *src = curr->filename;
-            printf("%s \n",src);
 
             //Check the exclusion list here. This can break a build,
             //but that is the correct behavior if asked. 
@@ -544,7 +549,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
 
             //Parallel build logic.
             if(!parallel_build){
-                int ret = system(compile_cmd);
+                int ret = launch_process(compile_cmd,NULL);
                 if (ret != 0) {
                     print_error("Compilation failed.");
                     free(topo_make);
@@ -598,7 +603,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
 
             //Check if we issue a sys call or spawn a thread to do it.
             if(!parallel_build){
-                int ret = system(compile_cmd);
+                int ret = launch_process(compile_cmd,NULL);
                 if (ret != 0) {
                     print_error("Compilation failed.");
                     return_code = -1;
