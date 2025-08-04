@@ -353,7 +353,7 @@ int build_library(char** sources, int src_count, const char* obj_dir, const char
         ar_pos += snprintf(ar_cmd + ar_pos, sizeof(ar_cmd) - ar_pos, " %s", obj_path);
     }
     print_info(ar_cmd);
-    int ret = system(ar_cmd);
+    int ret = launch_process(ar_cmd,NULL);
     if (ret != 0) {
         print_error("Linking failed.");
         return -1;
@@ -970,5 +970,6 @@ defer_build:
     //Check if we passed or failed the build
     return (ret_code < 0) ? -1 : 0;
 }
+
 
 
