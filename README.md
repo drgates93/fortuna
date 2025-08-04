@@ -97,6 +97,9 @@ deep = ["src"]
 [lib]
 #Placed in the lib folder and only supports static linking with ar
 #target = "test.lib"
+
+[args]
+#cmds = ["cmd_line_argument"] 
 ```
 
 ### Search Directories for files
