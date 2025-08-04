@@ -692,7 +692,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
 
     //Execute the link command
     print_info(link_cmd);
-    int ret = system(link_cmd);
+    int ret = launch_process(link_cmd,NULL);
     if (ret != 0) {
         print_error("Linking failed.");
         return_code = -1;
@@ -970,4 +970,5 @@ defer_build:
     //Check if we passed or failed the build
     return (ret_code < 0) ? -1 : 0;
 }
+
 
