@@ -401,9 +401,9 @@ bool is_in_rebuild_list(const char *filename, FileNode *rebuild_list) {
 void append_to_rebuild_list(FileNode **rebuild_list, const char *filename) {
     if (is_in_rebuild_list(filename, *rebuild_list)) return;
 
+    //Otherwise, add to the end. Note, the list is topologically sorted
+    //So we want to add them in order. 
     FileNode *node = new_file_node(filename);
-    node->next = NULL;
-
     if (*rebuild_list == NULL) {
         *rebuild_list = node;
     } else {
@@ -420,7 +420,6 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
     unsigned int idx = str_hash(filename);
     FileNode **pprev = &hash_table[idx];
     FileNode *node   = hash_table[idx];
-
     while (node) {
 
         if (strcmp(node->filename, filename) == 0) {
@@ -433,7 +432,7 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
             DependentNode *d = node->dependents;
             while (d) {
                 if (!is_in_rebuild_list(d->dependent, *rebuild_list)) {
-                    mark_dependents_for_rebuild(d->dependent, hash_table, rebuild_list,rebuild_cnt);
+                    mark_dependents_for_rebuild(d->dependent, hash_table, rebuild_list, rebuild_cnt);
                 }
                 d = d->next;
             }
