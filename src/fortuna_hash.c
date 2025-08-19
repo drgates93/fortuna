@@ -423,6 +423,7 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
     while (node) {
 
         if (strcmp(node->filename, filename) == 0) {
+            FileNode *next_bucket = node->next; // save continuation
             append_to_rebuild_list(rebuild_list, node->filename);
 
             //Increment the number of elements in the rebuild list. 
@@ -437,24 +438,13 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
                 d = d->next;
             }
 
-            // Remove node from hash table
-            *pprev = node->next;
-
-            // Free memory
-            free(node->filename);
-            DependentNode *dep = node->dependents;
-            while (dep) {
-                DependentNode *tmp = dep;
-                free(dep->dependent);
-                dep = dep->next;
-                free(tmp);
-            }
-            FileNode *tmp = node;
-            node = node->next;
-            free(tmp);
+            // unlink from hash bucket (note we saved next_bucket)
+            *pprev = next_bucket;   // skip this node in the chain
+            node   = next_bucket;   // continue traversal
         } else {
             pprev = &node->next;
             node = node->next;
         }
     }
+
 }
