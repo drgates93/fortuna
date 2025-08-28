@@ -500,7 +500,7 @@ int main(int argc, char *argv[]) {
         //Build a program
         create_main_f90(project_dir);
 
-        //Make teh generic toml file
+        //Make the generic toml file
         generate_project_toml(project_dir);
 
         //Safely exit

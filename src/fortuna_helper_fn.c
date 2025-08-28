@@ -62,7 +62,7 @@ int launch_process(const char *exe, const char *args) {
 #include <sys/wait.h>
 
 // POSIX version using fork + execve
-int launch_process(const char *exe, const char *args) {
+INLINE int launch_process(const char *exe, const char *args) {
     // Tokenize the args string into argv[] array
     char *argv[64];
     int argc = 0;

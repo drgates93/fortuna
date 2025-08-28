@@ -517,8 +517,9 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
         }
 
         //Compile each source only if it changed and needs to be rebuilt. 
+        int node_cnt   = 0;
         FileNode *curr = rebuild_list;
-        while(curr){
+        while(curr && node_cnt != rebuild_cnt){
             const char *src = curr->filename;
 
             //Check the exclusion list here. This can break a build,
@@ -571,6 +572,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
 
             //Next node
             curr = curr->next;
+            node_cnt++;
         }
 
         //Free the topo_make here and then free the rebuild list. 
@@ -825,88 +827,88 @@ int fortuna_build_project_incremental(const int parallel_build,
     char **deep_dirs    = fortuna_toml_get_array(&cfg, "search.deep");
     char **shallow_dirs = fortuna_toml_get_array(&cfg, "search.shallow");
 
-    // Check for multiple targets
-    char **keys = fortuna_toml_get_table_keys_list(&cfg, "bin");
-    if (keys) {
-        for (int i = 0; keys[i]; i++) {
-            char *sub_target_name  = fortuna_toml_resolve_target_name(&cfg, "bin", keys[i]);
-            if (!sub_target_name ) continue;
-            char key_buf[256];
+    // // Check for multiple targets
+    // char **keys = fortuna_toml_get_table_keys_list(&cfg, "bin");
+    // if (keys) {
+    //     for (int i = 0; keys[i]; i++) {
+    //         char *sub_target_name  = fortuna_toml_resolve_target_name(&cfg, "bin", keys[i]);
+    //         if (!sub_target_name ) continue;
+    //         char key_buf[256];
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.flags", sub_target_name);
-            char **sub_flags_array = fortuna_toml_get_array(&cfg, key_buf);
-            char *sub_flags_str = join_flags_array(sub_flags_array);
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.flags", sub_target_name);
+    //         char **sub_flags_array = fortuna_toml_get_array(&cfg, key_buf);
+    //         char *sub_flags_str = join_flags_array(sub_flags_array);
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.obj_dir", sub_target_name);
-            const char *sub_obj_dir = fortuna_toml_get_string(&cfg, key_buf);
-            if (!sub_obj_dir) sub_obj_dir = obj_dir;
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.obj_dir", sub_target_name);
+    //         const char *sub_obj_dir = fortuna_toml_get_string(&cfg, key_buf);
+    //         if (!sub_obj_dir) sub_obj_dir = obj_dir;
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.mod_dir", sub_target_name);
-            const char *sub_mod_dir = fortuna_toml_get_string(&cfg, key_buf);
-            if (!sub_mod_dir) sub_mod_dir = mod_dir;
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.mod_dir", sub_target_name);
+    //         const char *sub_mod_dir = fortuna_toml_get_string(&cfg, key_buf);
+    //         if (!sub_mod_dir) sub_mod_dir = mod_dir;
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.search.deep", sub_target_name);
-            char **sub_deep_dirs = fortuna_toml_get_array(&cfg, key_buf);
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.search.deep", sub_target_name);
+    //         char **sub_deep_dirs = fortuna_toml_get_array(&cfg, key_buf);
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.search.shallow", sub_target_name);
-            char **sub_shallow_dirs = fortuna_toml_get_array(&cfg, key_buf);
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.search.shallow", sub_target_name);
+    //         char **sub_shallow_dirs = fortuna_toml_get_array(&cfg, key_buf);
 
-            snprintf(key_buf, sizeof(key_buf), "bin.%s.exclude", sub_target_name);
-            char **sub_exclude_files = fortuna_toml_get_array(&cfg, key_buf);
+    //         snprintf(key_buf, sizeof(key_buf), "bin.%s.exclude", sub_target_name);
+    //         char **sub_exclude_files = fortuna_toml_get_array(&cfg, key_buf);
 
-                // Build maketopologicf90 command
-                char maketop_cmd[1024] = {0};
-            #ifdef _WIN32
-                strcat(maketop_cmd, "bin\\maketopologicf90.exe");
-            #else
-                strcat(maketop_cmd, "./bin/maketopologicf90.exe");
-            #endif
-            if (sub_deep_dirs) {
-                strcat(maketop_cmd, " -D ");
-                for (int j = 0; sub_deep_dirs[j]; j++) {
-                    strcat(maketop_cmd, sub_deep_dirs[j]);
-                    if (sub_deep_dirs[j + 1]) strcat(maketop_cmd, ",");
-                }
-            }
-            if (sub_shallow_dirs) {
-                strcat(maketop_cmd, " -d ");
-                for (int j = 0; sub_shallow_dirs[j]; j++) {
-                    strcat(maketop_cmd, sub_shallow_dirs[j]);
-                    if (sub_shallow_dirs[j + 1]) strcat(maketop_cmd, ",");
-                }
-            }
+    //             // Build maketopologicf90 command
+    //             char maketop_cmd[1024] = {0};
+    //         #ifdef _WIN32
+    //             strcat(maketop_cmd, "bin\\maketopologicf90.exe");
+    //         #else
+    //             strcat(maketop_cmd, "./bin/maketopologicf90.exe");
+    //         #endif
+    //         if (sub_deep_dirs) {
+    //             strcat(maketop_cmd, " -D ");
+    //             for (int j = 0; sub_deep_dirs[j]; j++) {
+    //                 strcat(maketop_cmd, sub_deep_dirs[j]);
+    //                 if (sub_deep_dirs[j + 1]) strcat(maketop_cmd, ",");
+    //             }
+    //         }
+    //         if (sub_shallow_dirs) {
+    //             strcat(maketop_cmd, " -d ");
+    //             for (int j = 0; sub_shallow_dirs[j]; j++) {
+    //                 strcat(maketop_cmd, sub_shallow_dirs[j]);
+    //                 if (sub_shallow_dirs[j + 1]) strcat(maketop_cmd, ",");
+    //             }
+    //         }
 
-            ret_code = build_target_incremental_core(&cfg,
-                                                     maketop_cmd,
-                                                     compiler,
-                                                     sub_flags_str,
-                                                     sub_obj_dir,
-                                                     sub_mod_dir,
-                                                     sub_target_name,
-                                                     sub_exclude_files,
-                                                     parallel_build,
-                                                     incremental_build,
-                                                     lib_only,
-                                                     run_flag,
-                                                     is_c);
+    //         ret_code = build_target_incremental_core(&cfg,
+    //                                                  maketop_cmd,
+    //                                                  compiler,
+    //                                                  sub_flags_str,
+    //                                                  sub_obj_dir,
+    //                                                  sub_mod_dir,
+    //                                                  sub_target_name,
+    //                                                  sub_exclude_files,
+    //                                                  parallel_build,
+    //                                                  incremental_build,
+    //                                                  lib_only,
+    //                                                  run_flag,
+    //                                                  is_c);
 
-            //Free the allocations for the arrays
-            if (sub_deep_dirs) {
-                for (int k = 0; sub_deep_dirs[k]; k++) free(sub_deep_dirs[k]);
-                free(sub_deep_dirs);
-            }
-            if (sub_shallow_dirs) {
-                for (int k = 0; sub_shallow_dirs[k]; k++) free(sub_shallow_dirs[k]);
-                free(sub_shallow_dirs);
-            }
-            if(sub_exclude_files){
-                for (int k = 0; sub_exclude_files[k]; k++) free(sub_exclude_files[k]);
-                free(sub_exclude_files);
-            }
+    //         //Free the allocations for the arrays
+    //         if (sub_deep_dirs) {
+    //             for (int k = 0; sub_deep_dirs[k]; k++) free(sub_deep_dirs[k]);
+    //             free(sub_deep_dirs);
+    //         }
+    //         if (sub_shallow_dirs) {
+    //             for (int k = 0; sub_shallow_dirs[k]; k++) free(sub_shallow_dirs[k]);
+    //             free(sub_shallow_dirs);
+    //         }
+    //         if(sub_exclude_files){
+    //             for (int k = 0; sub_exclude_files[k]; k++) free(sub_exclude_files[k]);
+    //             free(sub_exclude_files);
+    //         }
 
-            if(ret_code < 0) return -1;
-        }
-    }
+    //         if(ret_code < 0) return -1;
+    //     }
+    // }
 
     // Now build the top-level main target using the same logic:
     char maketop_cmd[1024] = {0};
@@ -970,6 +972,4 @@ defer_build:
     //Check if we passed or failed the build
     return (ret_code < 0) ? -1 : 0;
 }
-
-
 

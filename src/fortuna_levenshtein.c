@@ -218,7 +218,7 @@ int suggest_closest_word_fuzzy(TrieNode *root, const char *input) {
                      best_match, 0, &best_score);
 
     
-    //Possible we have a perfect match, but a wrong character afterwards
+    //Possible we have a perfect match, but a wrong character afterwards.
     //We matched the substring, but it's not a perfect match. 
     //Only return early here for an exactly perfect match.
     if(best_score == 0 && strcmp(best_match,input) == 0){

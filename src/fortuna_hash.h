@@ -1,6 +1,7 @@
 #ifndef FORTUNA_HASH_H
 #define FORTUNA_HASH_H
 
+#include "fortuna_helper_fn.h"
 #include <stdbool.h>
 
 #define HASH_TABLE_SIZE 1024
@@ -15,6 +16,7 @@ typedef struct FileNode {
     unsigned int file_hash;
     DependentNode *dependents;
     struct FileNode *next;
+    int marked;
 } FileNode;
 
 typedef struct HashEntry {
@@ -24,8 +26,8 @@ typedef struct HashEntry {
 } HashEntry;
 
 // Hash functions
-unsigned int hash_file_fnv1a(const char *filename);
-unsigned int str_hash(const char *str);
+INLINE unsigned int hash_file_blake3(const char *filename);
+INLINE unsigned int str_hash(const char *str);
 
 // Node creation
 DependentNode *new_dependent_node(const char *dependent);

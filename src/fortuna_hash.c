@@ -2,14 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "fortuna_hash.h"
-#include "fortuna_helper_fn.h"
 #include "blake3.h"
 
 #define MAX_LINE 1024
 #define HASH_TABLE_SIZE 1024
 
 //Use blake3 for hashing the file
-unsigned int hash_file_blake3(const char *filename) {
+INLINE unsigned int hash_file_blake3(const char *filename) {
     FILE *file = fopen(filename, "rb");
     if (!file) {
         return 0;
@@ -40,7 +39,7 @@ unsigned int hash_file_blake3(const char *filename) {
 }
 
 // Simple hash function for strings (djb2)
-unsigned int str_hash(const char *str) {
+INLINE unsigned int str_hash(const char *str) {
     unsigned int hash = 5381;
     int c;
     while ((c = *str++))
@@ -335,7 +334,6 @@ void prune_obsolete_cached_entries(HashEntry *prev_hash_table[], FileNode *hash_
         while (curr) {
             // Check if this filename is in the current dependency graph
             if (!find_file_node(curr->filename, hash_table)) {
-                // Not found → delete from prev_hash_table
                 *pprev = curr->next;
 
                 free(curr->filename);
@@ -387,7 +385,7 @@ DependentNode* get_dependents_if_changed(const char *filename, FileNode *hash_ta
 }
 
 
-// You can use this to avoid reprocessing files
+// Check if we need to reprocess
 bool is_in_rebuild_list(const char *filename, FileNode *rebuild_list) {
     FileNode *curr = rebuild_list;
     while (curr) {
@@ -446,5 +444,4 @@ void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], F
             node = node->next;
         }
     }
-
 }
