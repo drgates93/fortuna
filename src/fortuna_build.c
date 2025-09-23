@@ -33,10 +33,10 @@ static int dir_exists(const char *path) {
 #ifdef _WIN32
     #define PATH_SEP '\\'
     //Generate the hash file cache. 
-    const char* hash_cache_file = ".cache\\hash.dep";
+    const char* hash_cache_file = ".cache/hash.dep";
 
     //Depenency list 
-    const char* deps_file = ".cache\\topo.dep";
+    const char* deps_file = ".cache/topo.dep";
 #else
     #define PATH_SEP '/'
     //Generate the hash file cache. 
@@ -301,7 +301,8 @@ int truncate_file_name_at_file_extension(const char* rel_file_path){
             ||  strcmp_case_insensitive(ext, ".for") == 0
             ||  strcmp_case_insensitive(ext, ".f")   == 0
             ||  strcmp_case_insensitive(ext, ".f77") == 0
-            ||  strcmp_case_insensitive(ext, ".c")   == 0)){
+            ||  strcmp_case_insensitive(ext, ".c")   == 0
+            ||  strcmp_case_insensitive(ext, ".cu")  == 0)){
         *ext = '\0';
     }
     return 0;
@@ -791,7 +792,9 @@ int fortuna_build_project_incremental(const int parallel_build,
 
     int is_c = 0;
     if(strcasecmp(compiler,"clang") == 0 || 
-       strcasecmp(compiler,"gcc")   == 0){
+       strcasecmp(compiler,"gcc")   == 0 ||
+       strcasecmp(compiler,"nvcc")  == 0)
+    {
         is_c = 1;
     }
 

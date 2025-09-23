@@ -22,7 +22,7 @@ void print_test(const char *msg) {
 // Windows version using CreateProcessA
 int launch_process(const char *exe, const char *args) {
     // Combine exe + args into a single command line string
-    char cmdline[1024];
+    char cmdline[4096];
     snprintf(cmdline, sizeof(cmdline), "%s %s", exe, args ? args : "");
 
     STARTUPINFOA si = {0};
