@@ -6,6 +6,11 @@
 #include <sys/stat.h>
 #include <stdbool.h>
 
+#if defined(_MSC_VER)
+#define INLINE static __forceinline
+#else
+#define INLINE static inline __attribute__((always_inline))
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -43,7 +48,7 @@ typedef struct HashEntry {
 
 static HashEntry *hash_table[HASH_SIZE] = {0};
 
-unsigned int fnv1a_hash(const char *str) {
+INLINE unsigned int fnv1a_hash(const char *str) {
     const unsigned int FNV_prime = 16777619U;
     unsigned int hash = 2166136261U;
     while (*str) {
@@ -53,11 +58,11 @@ unsigned int fnv1a_hash(const char *str) {
     return hash % HASH_SIZE;
 }
 
-unsigned int hash_func(const char *str) {
+INLINE unsigned int hash_func(const char *str) {
     return fnv1a_hash(str);
 }
 
-void hash_insert(const char *key, int value) {
+INLINE void hash_insert(const char *key, int value) {
     unsigned int h = hash_func(key);
     HashEntry *entry = malloc(sizeof(HashEntry));
     if (!entry) {
@@ -70,7 +75,7 @@ void hash_insert(const char *key, int value) {
     hash_table[h] = entry;
 }
 
-int hash_lookup(const char *key) {
+INLINE int hash_lookup(const char *key) {
     unsigned int h = hash_func(key);
     for (HashEntry *e = hash_table[h]; e != NULL; e = e->next) {
         if (strcmp(e->key, key) == 0) return e->value;
@@ -90,14 +95,14 @@ void free_hash_table(void) {
     }
 }
 
-void str_tolower(char *s) {
+INLINE void str_tolower(char *s) {
     while (*s) {
         *s = (char)tolower((unsigned char)*s);
         s++;
     }
 }
 
-char *trim(char *str) {
+INLINE char *trim(char *str) {
     while (isspace((unsigned char)*str)) str++;
     if (*str == 0) return str;
     char *end = str + strlen(str) - 1;
@@ -151,14 +156,7 @@ void add_used_module(int file_idx, int used_idx) {
     f->uses[f->uses_count++] = used_idx;
 }
 
-int strcmp_case_insensitive(char const *a, char const *b)
-{
-    for (;; a++, b++) {
-        int d = tolower((unsigned char)*a) - tolower((unsigned char)*b);
-        if (d != 0 || !*a)
-            return d;
-    }
-}
+
 
 void parse_module_definition(char *line, int idx) {
     char *p = trim(line);
@@ -183,8 +181,9 @@ void parse_use_statement(char *line, int idx) {
     }
     char modname[MAX_MODULE_LEN];
     int i = 0;
-    while (*p && !isspace((unsigned char)*p) && *p != ',' && i < MAX_MODULE_LEN - 1)
+    while (*p && !isspace((unsigned char)*p) && *p != ',' && i < MAX_MODULE_LEN - 1){
         modname[i++] = (char)tolower((unsigned char)*p++);
+    }
     modname[i] = '\0';
     int dep_idx = hash_lookup(modname);
     if (dep_idx != -1) add_used_module(idx, dep_idx);
@@ -216,7 +215,7 @@ void parse_line_for_dep(char *line, const char *filename, int file_idx, int mode
     }
 
     // C
-    if (strstr(filename, ".c")) {
+    if (strstr(filename, ".c") || strstr(filename, ".cu") ) {
         if (mode == 1) parse_include_statement(line, file_idx);
     }
 }
