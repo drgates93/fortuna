@@ -11,7 +11,7 @@
 
 // Trie node with bitmask and children pointers
 typedef struct TrieNode {
-    uint32_t mask;                 // 27-bit mask for children presence
+    uint32_t mask;                 // 27-bit mask for children presence (we keep the - character)
     struct TrieNode* children[ALPHABET_SIZE];
     int is_word;
 } TrieNode;

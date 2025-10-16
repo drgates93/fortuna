@@ -246,7 +246,7 @@ void copy_template_files(const char *base_path) {
     //char src_makefile[1024];
     char src_exe[1024];
     //snprintf(src_makefile, sizeof(src_makefile), "%s%c%s%c%s", install_dir, PATH_SEP, "data",PATH_SEP,"template.mak");
-    snprintf(src_exe,      sizeof(src_exe), "%s%c%s%c%s", install_dir, PATH_SEP, "bin",PATH_SEP,"maketopologicf90.exe");
+    snprintf(src_exe,sizeof(src_exe), "%s%c%s%c%s", install_dir, PATH_SEP, "bin",PATH_SEP,"maketopologicf90.exe");
 
     //Now we can copy the files.
     //copy_file(src_makefile, dest_makefile);

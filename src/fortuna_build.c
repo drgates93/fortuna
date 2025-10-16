@@ -53,6 +53,91 @@ int make_dir(const char *path) {
     return -1;
 }
 
+int remove_folder(const char *path) {
+#ifdef _WIN32
+    WIN32_FIND_DATA ffd;
+    HANDLE hFind = INVALID_HANDLE_VALUE;
+    char search_path[MAX_PATH];
+    snprintf(search_path, MAX_PATH, "%s\\*", path);
+
+    hFind = FindFirstFile(search_path, &ffd);
+    if (INVALID_HANDLE_VALUE == hFind) {
+        fprintf(stderr, "FindFirstFile failed (%lu)\n", GetLastError());
+        return -1;
+    }
+
+    do {
+        if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+            continue;
+
+        char full_path[MAX_PATH];
+        snprintf(full_path, MAX_PATH, "%s\\%s", path, ffd.cFileName);
+
+        if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (remove_folder(full_path) != 0) {
+                FindClose(hFind);
+                return -1;
+            }
+        } else {
+            if (!DeleteFile(full_path)) {
+                fprintf(stderr, "Failed to delete file %s (%lu)\n", full_path, GetLastError());
+                FindClose(hFind);
+                return -1;
+            }
+        }
+    } while (FindNextFile(hFind, &ffd) != 0);
+
+    FindClose(hFind);
+
+    if (!RemoveDirectory(path)) {
+        fprintf(stderr, "Failed to remove directory %s (%lu)\n", path, GetLastError());
+        return -1;
+    }
+    return 0;
+
+#else
+    DIR *d = opendir(path);
+    if (!d) {
+        perror("opendir failed");
+        return -1;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+
+        char full_path[PATH_MAX];
+        snprintf(full_path, PATH_MAX, "%s/%s", path, entry->d_name);
+
+        struct stat statbuf;
+        if (lstat(full_path, &statbuf) != 0) {
+            perror("stat failed");
+            closedir(d);
+            return -1;
+        }
+
+        if (S_ISDIR(statbuf.st_mode)) {
+            if (remove_folder(full_path) != 0) {
+                closedir(d);
+                return -1;
+            }
+        } else {
+            if (unlink(full_path) != 0) {
+                perror("unlink failed");
+                closedir(d);
+                return -1;
+            }
+        }
+    }
+    closedir(d);
+    if (rmdir(path) != 0) {
+        perror("rmdir failed");
+        return -1;
+    }
+    return 0;
+#endif
+}
+
 int count_files_in_directory(const char *path) {
     int count = 0;
 
@@ -389,10 +474,12 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     HashEntry* prev_map[HASH_TABLE_SIZE] = {NULL};
     
     //Now we get the exclusion list (if it exists)
+    int exclusion_cnt = 0;
     FileNode*  exclusion_map[HASH_TABLE_SIZE]  = {NULL};
     if(exclude_files){
         for(int i = 0; exclude_files[i]; i++){
             insert_node(exclude_files[i],exclusion_map);
+            exclusion_cnt++;
         }
     }
 
@@ -432,9 +519,21 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     //object files and the number of src files. We can't just rebuild some obj
     //files and not others because this case would be weird enough that maybe a file
     //was renamed to a different one and now we have a problem. 
-    if(src_count != obj_cnt){
+    if((src_count-exclusion_cnt) != (obj_cnt-exclusion_cnt)){
         incremental_build = 0;
         parallel_build    = 0;
+
+        //Need to remove the old object folder and then make a new one.
+        //No choice really, as the re-naming could cause problems and we
+        //need a fresh build to do this. 
+        if(mod_dir) {
+            remove_folder(mod_dir);
+            make_dir(mod_dir);
+        }
+        if(obj_dir){
+            remove_folder(obj_dir);
+            make_dir(obj_dir);
+        }
     }
 
     //Define the rebuild count
@@ -446,7 +545,7 @@ int build_target_incremental_core(fortuna_toml_t *cfg,
     //The most threads we can have is all of them so this is a safe allocation. 
     if(parallel_build) threads = (thread_t*)malloc(src_count*sizeof(thread_t));
 
-    //Allocate the characetr buffers
+    //Allocate the character buffers
     char compile_cmd[2048];
     char obj_file[1024];
     char mod_file[1024];
